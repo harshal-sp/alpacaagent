@@ -18,13 +18,22 @@ ALPACA_DATA_URL = "https://data.alpaca.markets"
 if not APCA_PAPER:
     raise RuntimeError("APCA_PAPER must be true — live trading is blocked in this skill.")
 
-# --- LLM (Featherless primary, OpenAI fallback) ---
+# --- LLM — Ling 3.0 Flash Fin (primary finance-native) → Featherless → OpenAI → Rules ---
+# Ling 3.0 Flash Fin via Opencode/Vercel AI Gateway/OpenRouter (free through Sep 25 2026)
+LING_API_KEY = os.getenv("LING_API_KEY", "") or os.getenv("OPENROUTER_API_KEY", "") or os.getenv("AI_GATEWAY_API_KEY", "")
+LING_BASE_URL = os.getenv("LING_BASE_URL", "https://openrouter.ai/api/v1")  # or https://ai-gateway.vercel.sh/v1 or https://api.opencode.ai/v1
+LING_MODEL = os.getenv("LING_MODEL", "inclusionai/ling-3.0-flash-fin:free")  # free alias for inclusionai/ling-3.0-flash-fin
+# Opencode direct (uses opencode's proxy, no user key needed when running via `opencode run -m opencode/ling-3.0-flash-fin-free`)
+OPENCODE_LING_MODEL = os.getenv("OPENCODE_LING_MODEL", "opencode/ling-3.0-flash-fin-free")
 FEATHERLESS_API_KEY = os.getenv("FEATHERLESS_API_KEY", "")
 FEATHERLESS_BASE_URL = os.getenv("FEATHERLESS_BASE_URL", "https://api.featherless.ai/v1")
 FEATHERLESS_MODEL = os.getenv("FEATHERLESS_MODEL", "meta-llama/Meta-Llama-3.1-70B-Instruct")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")
+# Vercel AI Gateway alternative
+AI_GATEWAY_API_KEY = os.getenv("AI_GATEWAY_API_KEY", "")
+AI_GATEWAY_BASE_URL = os.getenv("AI_GATEWAY_BASE_URL", "https://ai-gateway.vercel.sh/v1")
 
 # --- Universe (aggressive: focus + earnings names) ---
 UNIVERSE = ["SPY", "QQQ", "AAPL", "NVDA", "TSLA", "MSFT", "META", "AMD"]

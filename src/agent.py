@@ -9,6 +9,7 @@ from typing import Dict, Any, List
 from src.config import UNIVERSE, RISK_CONFIG, PROJECT_ROOT, APCA_PAPER, APCA_API_KEY_ID
 from src.data.alpaca_client import AlpacaClient
 from src.data.earnings import get_upcoming_earnings
+from src.data.news import get_news_sentiment
 from src.features.indicators import compute_features
 from src.brain.llm import classify
 from src.strategy.selector import build_legs
@@ -101,6 +102,14 @@ def run_cycle(dry_run: bool = False, force: bool = False, symbol_filter: str | N
             bars = client.get_bars(symbol, days=60)
             chain = client.get_option_chain(symbol)
             features = compute_features(symbol, bars, chain)
+            # News sentiment (Ling Fin Flash when key available, else heuristic) — v2 enhancement
+            try:
+                sentiment = get_news_sentiment(symbol)
+                features["news_sentiment"] = sentiment.get("sentiment")
+                features["news_confidence"] = sentiment.get("confidence")
+                features["news_headline"] = sentiment.get("headline", "")[:120]
+            except Exception:
+                features["news_sentiment"] = "neutral"
             logger.info(f"Features {symbol}: {features}")
 
             # Skip if no chain
@@ -109,12 +118,25 @@ def run_cycle(dry_run: bool = False, force: bool = False, symbol_filter: str | N
                 continue
 
             decision = classify(features, earnings)
+            # Boost confidence if news aligns with bias (e.g., bullish news + bullish strategy)
+            try:
+                if features.get("news_sentiment") == decision.get("bias") and features.get("news_sentiment") != "neutral":
+                    decision["confidence"] = min(0.95, decision.get("confidence", 0.5) + 0.07)
+                    decision["rationale"] += f" + news {features['news_sentiment']}"
+            except Exception:
+                pass
             logger.info(f"LLM decision {symbol}: {decision}")
             log_event("symbol_eval", symbol=symbol, features=features, decision=decision)
 
-            # Track best by confidence (and strategy != NO_TRADE)
+            # Track best by edge-weighted confidence and diversification
+            existing_underlyings = {p.get("symbol","")[:4] for p in positions}
+            if symbol[:3] in {u[:3] for u in existing_underlyings} and len(positions) >= 2:
+                decision["confidence"] = max(0.1, decision.get("confidence",0) * 0.85)
             conf = decision.get("confidence", 0)
-            if decision.get("strategy") != "NO_TRADE" and conf > best_confidence:
+            edge = decision.get("edge_bps", 0)
+            score = conf + edge/10000
+            best_score = best_confidence + (best_decision.get("edge_bps",0)/10000 if best_decision else 0) if best_decision else -1
+            if decision.get("strategy") != "NO_TRADE" and score > best_score:
                 # Build legs to validate feasibility
                 spot = features.get("last", 500)
                 proposal = build_legs(decision, spot, chain, bp)

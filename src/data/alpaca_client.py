@@ -285,10 +285,13 @@ class AlpacaClient:
                                 "volume": int(row["volume"]) if not pd.isna(row["volume"]) else 0,
                                 "openInterest": int(row["openInterest"]) if not pd.isna(row["openInterest"]) else 0,
                             })
-                        # Quality metrics
+                        # Quality metrics — require both calls and puts
                         filtered = [c for c in tmp if abs(c["strike"] - spot) / spot < 0.08]
                         if len(filtered) < 8:
-                            # not enough near-the-money strikes
+                            continue
+                        calls_f = [c for c in filtered if c["type"] == "call"]
+                        puts_f = [c for c in filtered if c["type"] == "put"]
+                        if len(calls_f) < 5 or len(puts_f) < 5:
                             continue
                         avg_iv = sum(c["iv"] for c in filtered) / len(filtered) if filtered else 0
                         # Prefer iv 0.15-0.6 and many strikes near spot

@@ -3,11 +3,13 @@
 > **Alpaca AI Trading Agents Hackathon — lablab.ai × Alpaca — Aug 28–Sep 4 2026**  
 > Track: **Options Alpha Agents** — Fully autonomous, options-required, paper trading, MCP or CLI required.
 
-Vega is an **aggressive** autonomous agent that trades **0–7 DTE options** on `SPY, QQQ, AAPL, NVDA, TSLA, MSFT, META, AMD` via Alpaca's Paper Trading environment. It uses **Featherless AI (Llama 3.1 70B)** to classify market regime and select the optimal defined-risk options structure, then enforces 7 deterministic risk gates before executing via **Trading API + MCP + CLI** (both, for max Technology score).
+Vega is an **aggressive** autonomous agent that trades **0–7 DTE options** on `SPY, QQQ, AAPL, NVDA, TSLA, MSFT, META, AMD` via Alpaca's Paper Trading environment. It uses **Ling 3.0 Flash Fin (finance-native 124B MoE, 5.1B active, 256K context, free via Opencode/Vercel AI Gateway/OpenRouter through Sep 25)** → Featherless Llama 3.1 70B → OpenAI → rules to classify regime and select the optimal defined-risk options structure, then enforces 8 deterministic risk gates (incl. fee gate) before executing via **Trading API + MCP + CLI** (both, for max Technology score).
 
 ```
-Alpaca Data API → Feature Engine (RSI/EMA/ATR/IV Rank) → LLM Brain (Featherless) → Strategy Selector → Risk Gates → Execution (Trading API + MCP + CLI traces) → Dashboard
+Alpaca Data API → Feature Engine (RSI/EMA/BB/MACD/VWAP/IV Rank/vol) → LLM Brain (Ling Fin Flash → Featherless → OpenAI → Rules) → Strategy Selector → Risk Gates → Execution (Trading API + MCP + CLI traces) → Dashboard
 ```
+
+**Opencode:** Run with Ling via `opencode -m opencode/ling-3.0-flash-fin-free` (see `opencode.jsonc` + `docs/opencode_ling.md`).
 
 ---
 
@@ -22,8 +24,11 @@ cp .env.example .env
 # edit .env: add your PAPER keys from https://app.alpaca.markets/paper/dashboard/overview
 # APCA_API_KEY_ID=PK...
 # APCA_API_SECRET_KEY=...
-# FEATHERLESS_API_KEY=...  (optional — falls back to OpenAI then rules)
 # APCA_PAPER=true (must stay true)
+# LING — pick one (free through Sep 25):
+# OPENROUTER_API_KEY=sk-or-v1-... LING_MODEL=inclusionai/ling-3.0-flash-fin:free
+# or AI_GATEWAY_API_KEY=... or via `opencode run -m opencode/ling-3.0-flash-fin-free` (no key needed, proxied)
+# FEATHERLESS_API_KEY=... (optional secondary, $25 credits) / OPENAI_API_KEY=... (fallback)
 
 # 1) Dry-run cycle — previews without submitting
 python -m src.agent --dry-run --force
@@ -48,12 +53,14 @@ python -m src.agent --loop --interval 900
 
 | Layer | File | Description |
 |-------|------|-------------|
-| **Data** | `src/data/alpaca_client.py` | `TradingClient(paper=True)` literal, `StockHistoricalDataClient`, option chain via yfinance fallback with synthetics. Paper guard hard-fails if `APCA_PAPER != true`. |
-| **Features** | `src/features/indicators.py` | RSI, EMA20/50, ATR%, 20d realized vol, IV rank. |
-| **Greeks** | `src/features/greeks.py` | Black-Scholes delta/gamma/theta/vega + mid pricing. |
-| **LLM Brain** | `src/brain/llm.py` | Featherless `meta-llama/Meta-Llama-3.1-70B-Instruct` → OpenAI `gpt-4o-mini` → `rules_classifier` fallback. Strict JSON `{regime, confidence, strategy}`. |
-| **Strategy** | `src/strategy/selector.py` | 8 structures: `IRON_CONDOR`, `BULL_PUT_SPREAD`, `BEAR_CALL_SPREAD`, `LONG_STRADDLE`, `LONG_STRANGLE`, `LONG_CALL`, `LONG_PUT`, `NO_TRADE`. Aggressive sizing `min(5, (BP*0.18)//cost)`. |
-| **Risk** | `src/risk/gates.py` | 7 gates: BP, position count, concentration (30%), daily −3% / weekly −6% halt, portfolio delta ≤60, expiry 0–7 DTE, open orders <8. |
+| **Data** | `src/data/alpaca_client.py` | `TradingClient(paper=True)` literal, `StockHistoricalDataClient`, balanced chain scoring (≥5 calls+puts, ≥8 near-money) via yfinance fallback + synthetics. Paper guard hard-fails if `APCA_PAPER != true`. |
+| **Features** | `src/features/indicators.py` | RSI, EMA20/50/SMA20, ATR%, 20d vol, IV rank, **BB width/pct_B, MACD hist, VWAP dist, volume ratio, S/R** — regime uses BB width <4% + vol >1.5. |
+| **News** | `src/data/news.py` | yfinance headlines + Ling Fin Flash sentiment (bullish/bearish/neutral) → boosts confidence +0.07 if aligns. |
+| **Greeks** | `src/features/greeks.py` | Black-Scholes delta/gamma/theta/vega (sigma clamped 0.1-0.8) + liquid mid fallback. |
+| **LLM Brain** | `src/brain/llm.py` | **Ling 3.0 Flash Fin finance prompt** (256K, FinFIRST) → Featherless → OpenAI → `rules_classifier`. `edge_bps` + `expected_move_pct`. Strict JSON. |
+| **Strategy** | `src/strategy/selector.py` | 8 structures: `IRON_CONDOR`, `BULL_PUT_SPREAD`, `BEAR_CALL_SPREAD`, `LONG_STRADDLE`, `LONG_STRANGLE`, `LONG_CALL`, `LONG_PUT`, `NO_TRADE`. Fee-aware sizing, liquid-mid, balanced expiries. |
+| **Risk** | `src/risk/gates.py` | **8 gates:** BP, position count, concentration (30%), daily −3% / weekly −6% halt, portfolio delta ≤60, expiry 0–7 DTE, open orders <8, **fee gate (net credit ≥$0.10/share, fees ≤60% gross)**. |
+| **Fees** | `src/utils/fees.py` | `$0.15/contract + $0.02 reg + 5bps slip` → net open/r/t P&L, blocks fee-eaten spreads. |
 | **Execution** | `src/execution/orders.py` | Preview table + `submit_legs` (limit orders, idempotent `client_order_id`). Manages take-profit +40% / stop −25% via `close_position`. |
 | **MCP/CLI** | `src/execution/mcp_trace.py` | `GetDynamicTools` discovery + `place_option_order` + `alpaca order submit` traces to `logs/mcp_trace.jsonl` / `logs/cli_trace.jsonl`. |
 | **Agent** | `src/agent.py` | `run_cycle()` — clock check, account/positions, earnings calendar, position management, universe eval, best-confidence pick, double risk gate, submit, log to `runs/`. |

@@ -93,6 +93,8 @@ def build_legs(decision: Dict[str, Any], spot: float, chain: List[Dict[str, Any]
             # fallback: nearest strikes method with enforced separation
             puts = sorted([c for c in enriched if c["type"]=="put"], key=lambda x: x["strike"])
             calls = sorted([c for c in enriched if c["type"]=="call"], key=lambda x: x["strike"])
+            if not puts or not calls:
+                return {"strategy": strat, "legs": [], "error": "no puts/calls for condor fallback"}
             # pick around spot +-1.5% and +-3%
             short_put = _find(enriched, spot * 0.985, "put") or puts[len(puts)//2]
             long_put = _find(enriched, spot * 0.965, "put") or puts[0]
@@ -143,6 +145,8 @@ def build_legs(decision: Dict[str, Any], spot: float, chain: List[Dict[str, Any]
         if short_put["symbol"] == long_put["symbol"] or short_put["strike"] == long_put["strike"]:
             # force separation
             puts_sorted = sorted([c for c in enriched if c["type"]=="put"], key=lambda x: x["strike"])
+            if not puts_sorted:
+                return {"strategy": strat, "legs": [], "error": "no puts for fallback"}
             # short at 98% spot, long at 96% spot with distinct
             short_put = _find(enriched, spot * 0.985, "put") or puts_sorted[len(puts_sorted)//2]
             long_put = _find(enriched, spot * 0.965, "put") or puts_sorted[0]
@@ -172,6 +176,8 @@ def build_legs(decision: Dict[str, Any], spot: float, chain: List[Dict[str, Any]
             return {"strategy": strat, "legs": [], "error": "no calls found"}
         if short_call["symbol"] == long_call["symbol"] or short_call["strike"] == long_call["strike"]:
             calls_sorted = sorted([c for c in enriched if c["type"]=="call"], key=lambda x: x["strike"])
+            if not calls_sorted:
+                return {"strategy": strat, "legs": [], "error": "no calls for fallback"}
             short_call = _find(enriched, spot * 1.015, "call") or calls_sorted[len(calls_sorted)//2]
             long_call = _find(enriched, spot * 1.035, "call") or calls_sorted[-1]
             if short_call["symbol"] == long_call["symbol"]:
