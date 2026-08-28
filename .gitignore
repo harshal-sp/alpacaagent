@@ -1,0 +1,21 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env.local
+logs/vega.log
+logs/vega.jsonl
+logs/cycles.jsonl
+runs/
+*.db
+*.sqlite
+.DS_Store
+.coverage
+.pytest_cache/
+chromadb/
+.cache/
+# Keep MCP/CLI traces for judging evidence — do NOT ignore:
+# logs/mcp_trace.jsonl
+# logs/cli_trace.jsonl

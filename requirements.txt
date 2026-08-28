@@ -1,0 +1,13 @@
+alpaca-py>=0.34.0
+pandas>=2.0.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+openai>=1.30.0
+pydantic>=2.0.0
+pytz>=2024.1
+rich>=13.0.0
+streamlit>=1.35.0
+plotly>=5.20.0
+yfinance>=0.2.30
+scipy>=1.12.0
