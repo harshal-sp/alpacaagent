@@ -16,6 +16,16 @@ class OrderExecutor:
     def preview(self, legs: List[Dict[str, Any]], account: Dict[str, Any]) -> str:
         bp = float(account.get("buying_power", 0) or 0)
         eq = float(account.get("equity", 0) or 0)
+        # Fee estimate — NEW: show true cost that could otherwise eat profit
+        try:
+            from src.utils.fees import estimate_fees
+            fees = estimate_fees(legs)
+            fee_line_open = f"│ Fees (open):  ${fees['total_one_way']:.2f} (comm ${fees['commission']:.2f} + slip ${fees['slippage']:.2f}) │"
+            fee_line_rt = f"│ Fees (r/t):   ${fees['total_round_trip']:.2f} (open+close)              │"
+        except Exception:
+            fees = {"total_one_way": 0, "total_round_trip": 0, "commission": 0, "slippage": 0}
+            fee_line_open = "│ Fees (open):  $0.00                             │"
+            fee_line_rt = "│ Fees (r/t):   $0.00                             │"
         lines = []
         lines.append("┌─────────────────────────────────────────┐")
         lines.append("│           ORDER PREVIEW (PAPER)         │")
@@ -41,7 +51,17 @@ class OrderExecutor:
         lines.append("├─────────────────────────────────────────┤")
         lines.append(f"│ Est. Debit:   ${total_debit:,.2f}                │")
         lines.append(f"│ Est. Credit:  ${total_credit:,.2f}                │")
-        lines.append(f"│ BP after:     ${bp - total_debit + total_credit:,.2f}                │")
+        lines.append(f"│ Est. Net:     ${total_credit - total_debit:.2f} (credit-debit)      │")
+        lines.append(fee_line_open)
+        lines.append(fee_line_rt)
+        net_after_fees_open = total_credit - total_debit - fees["total_one_way"]
+        net_after_fees_rt = total_credit - total_debit - fees["total_round_trip"]
+        lines.append(f"│ Net open:     ${net_after_fees_open:.2f} (after open fees)      │")
+        lines.append(f"│ Net r/t:      ${net_after_fees_rt:.2f} (if closed)           │")
+        # Highlight if fees eat profit
+        if total_credit > 0 and net_after_fees_rt <= 0:
+            lines.append("│ ⚠ FEES EAT PROFIT — trade rejected by risk gate │")
+        lines.append(f"│ BP after:     ${bp - total_debit + total_credit:.2f} (gross)            │")
         lines.append("│ Environment:  PAPER (verified)          │")
         lines.append("│ ⚠ Paper trading only. Not financial advice. │")
         lines.append("└─────────────────────────────────────────┘")

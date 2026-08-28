@@ -58,6 +58,18 @@ STRATEGY_CONFIG = {
     "income_target_premium_pct": 0.8,  # target 0.8% premium on condor
 }
 
+# --- Fees & Transaction Costs (paper vs live gap) ---
+# Alpaca Paper: $0 commission (simulated fill). Live: ~$0.15-$0.65/contract + ~$0.02 regulatory.
+# We use $0.15 paper-sim to ensure paper P&L would survive live costs. Tune via env if needed.
+FEE_CONFIG = {
+    "options_commission_per_contract": float(os.getenv("OPTIONS_FEE_PER_CONTRACT", "0.15")),
+    "regulatory_per_contract": float(os.getenv("OPTIONS_REG_FEE", "0.02")),
+    "stock_commission_per_share": float(os.getenv("STOCK_FEE_PER_SHARE", "0.0")),
+    "slippage_bps": float(os.getenv("SLIPPAGE_BPS", "5")),  # 5 bps = 0.05% slip on fill
+    "min_net_credit_per_share": 0.10,  # Reject credit spreads where net after fees < $0.10/share
+    "min_net_debit_edge_pct": 5.0,
+}
+
 # --- Execution ---
 EXECUTION_CONFIG = {
     "poll_interval_seconds": 15,

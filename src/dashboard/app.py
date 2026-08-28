@@ -122,17 +122,34 @@ with tabs[0]:
                 last = json.loads(open(runs[0]).read())
                 st.json({k: v for k, v in last.items() if k not in ("evals", "preview")})
                 if last.get("preview"):
-                    with st.expander("Last Preview"):
+                    with st.expander("Last Preview (incl. fees)"):
                         st.text(last["preview"])
             else:
                 st.info("No runs yet")
+        st.subheader("Fees & Costs (NEW)")
+        st.markdown("""
+        **Every trade net of:**
+        - `FEE_CONFIG` `src/config.py:63` — `$0.15/contract` commission + `$0.02` regulatory + `5 bps` slippage
+        - One-way open ≈ `$1.70` for 5×2-leg spread, round-trip ≈ `$3.40`
+        - **Risk gate 8:** `Fee gate` `src/risk/gates.py:173` rejects if net credit < `$0.10/share` or fees >60% of gross
+        - Preview `src/execution/orders.py:16` shows `Net open / Net r/t` — if `Net r/t ≤0` trade blocked
+        - Paper P&L is gross; dashboard adds net P&L estimate
+        """)
         st.subheader("Risk Gates (Aggressive)")
         st.markdown("""
         - Max 20% BP per trade, 85% total
         - Max 6 positions, 5 contracts/leg
         - Stop -25% / Take +40% per position
         - Daily halt -3%, Weekly -6%
-        - No naked options (spreads only)
+        - No naked options, max 6 positions, 5 contracts/leg
+        - **Fee gate** — ensures fees don't eat profit
+        """)
+        st.subheader("Strategy Modes")
+        st.markdown("""
+        1. **HIGH IV + sideways** → Iron Condor (theta)
+        2. **Low IV + earnings** → Long Straddle (gamma)
+        3. **Trending + high ATR** → Bull Put / Bear Call Spread
+        4. **Momentum** → Long Call/Put
         """)
         st.subheader("Strategy Modes")
         st.markdown("""

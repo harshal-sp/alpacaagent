@@ -2,6 +2,7 @@
 from typing import Dict, List, Any, Tuple
 from src.utils.logger import log_event, logger
 from src.features.greeks import describe_chain_greeks, option_mid_price, bs_greeks
+from src.utils.fees import estimate_fees, net_credit_for_spread, is_profitable_after_fees
 
 def _nearest_strikes(chain: List[Dict], spot: float, count: int = 7) -> List[Dict]:
     return sorted(chain, key=lambda c: abs(c["strike"] - spot))[:count]
@@ -56,12 +57,20 @@ def build_legs(decision: Dict[str, Any], spot: float, chain: List[Dict[str, Any]
 
     legs: List[Dict] = []
     rationale = decision.get("rationale", "")
-    # Determine quantity — aggressive: size to ~15-20% BP but max 5 contracts
-    # Estimate credit/debit per spread
-    def qty_for_budget(est_cost_per_spread: float) -> int:
+    # Determine quantity — aggressive: size to ~15-20% BP but max 5 contracts, fee-aware (cost includes one-way fees)
+    def qty_for_budget(est_cost_per_spread: float, legs_preview: List[Dict] | None = None) -> int:
         if est_cost_per_spread <= 0:
             return 1
-        max_by_bp = max(1, int((buying_power * 0.18) // (est_cost_per_spread * 100)))
+        # Add estimated fees to cost per spread to avoid over-sizing when fees eat edge
+        fee_buffer = 0
+        if legs_preview:
+            try:
+                fees = estimate_fees(legs_preview)
+                fee_buffer = fees["total_one_way"] / max(len(legs_preview), 1)  # spread evenly
+            except Exception:
+                pass
+        adj_cost = est_cost_per_spread + fee_buffer / 100  # fee_buffer is total dollars, convert to per-share
+        max_by_bp = max(1, int((buying_power * 0.18) // (max(1, adj_cost) * 100)))
         return max(1, min(5, max_by_bp, 5))
 
     if strat == "IRON_CONDOR":

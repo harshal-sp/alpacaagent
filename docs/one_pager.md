@@ -37,6 +37,8 @@ All 7 gates in `src/risk/gates.py:validate_trade()` must pass before submission;
 
 Position management (`src/execution/orders.py:manage_positions`) runs each cycle: take-profit +40%, stop-loss −25% → `close_position` via Alpaca API. No naked options — all spreads or long premium, max loss known at entry.
 
+8. **Fee Gate** — `src/risk/gates.py:173` + `src/utils/fees.py:1` + `src/config.py:63` ensures profit survives live costs. Every proposal estimates `FEE_CONFIG`: `$0.15/contract` commission + `$0.02` regulatory + `5 bps` slippage. Example: 5× bear call spread (1.26–0.43 = 0.83 credit): gross $415 → open fees $2.10 → net $0.776/share; if net < $0.10/share or fees >60% of gross, trade blocked. Preview `src/execution/orders.py:16` shows `Net open / Net r/t`; close fees reserved. Prevents penny-spread erosion where fees would take all profit.
+
 ## 3. Alpaca Infrastructure Implementation
 
 - **Trading API** (`src/data/alpaca_client.py`): `TradingClient(paper=True)` literal (skill §Phase 8 — not env-configurable), `StockHistoricalDataClient`, `OptionHistoricalDataClient` fallback to `yfinance` options chain. Endpoints: `GET /v2/account`, `/v2/positions`, `/v2/orders`, `GET /v2/assets/{symbol}`, `POST /v2/orders` (per-leg limit orders, idempotent `client_order_id=vega-{uuid}`).

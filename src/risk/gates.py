@@ -5,6 +5,7 @@ import math
 
 from src.config import RISK_CONFIG
 from src.utils.logger import log_event, logger
+from src.utils.fees import is_profitable_after_fees, estimate_fees
 
 class RiskCheckResult:
     def __init__(self, passed: bool, reason: str, details: Dict[str, Any] | None = None):
@@ -170,6 +171,24 @@ def validate_trade(
         passed = False
         reasons.append(f"Too many open orders {len(open_orders)} >= 8")
 
+    # fee profitability gate — NEW: ensure profit survives commissions + slippage + regulatory
+    profitable, fee_reason, fee_detail = is_profitable_after_fees(proposal)
+    if not profitable:
+        passed = False
+        reasons.append(f"✗ Fee gate: {fee_reason}")
+    else:
+        reasons.append(f"✓ Fee gate: {fee_reason}")
+
+    # also ensure est_cost accounts for fees in buying-power buffer (add 2x one-way fees to be safe)
+    try:
+        fees = estimate_fees(legs)
+        est_cost_with_fees = est_cost + fees["total_round_trip"]
+        # If with fees exceeds BP, warn (but primary BP gate already checked gross)
+        if est_cost_with_fees > float(account.get("buying_power", 1e9) or 1e9):
+            reasons.append(f"⚠ With fees round-trip ${fees['total_round_trip']:.2f}, total ${est_cost_with_fees:.2f} near BP limit")
+    except Exception:
+        pass
+
     # log
-    log_event("risk_check", proposal=proposal.get("strategy"), underlying=underlying, passed=passed, reasons=reasons, est_cost=est_cost)
+    log_event("risk_check", proposal=proposal.get("strategy"), underlying=underlying, passed=passed, reasons=reasons, est_cost=est_cost, fees=fee_detail if 'fee_detail' in locals() else {})
     return passed, reasons
