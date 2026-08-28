@@ -57,9 +57,62 @@ class OrderExecutor:
         return "\n".join(lines)
 
     def submit_legs(self, legs: List[Dict[str, Any]], dry_run: bool = False) -> List[Dict[str, Any]]:
-        """Submit each leg via Trading API (primary) + log MCP + CLI traces."""
+        """Submit each leg via Trading API (primary) + log MCP + CLI traces.
+        For spreads, submits long (buy) legs first so short legs are covered (avoids 403 naked rejection).
+        If a mleg (2/4 legs with both sides) is detected, attempts REST mleg order first; falls back to leg-by-leg.
+        """
+        # Reorder: buys first for coverage
+        legs_sorted = sorted(legs, key=lambda l: 0 if l.get("side") == "buy" else 1)
+        # Detect spread: 2 or 4 legs with mixed sides
+        is_spread = len(legs) in (2, 4) and any(l.get("side") == "buy" for l in legs) and any(l.get("side") == "sell" for l in legs)
+        if is_spread and not dry_run:
+            # Try mleg via REST first (Alpaca paper supports mleg for level 3)
+            try:
+                from src.utils.logger import log_event as _le
+                import requests as _req
+                from src.config import APCA_API_KEY_ID, APCA_API_SECRET_KEY
+                # Calculate net limit price: credit spreads => net credit, debit => net debit
+                # Use sum of mids: sells - buys
+                net = 0.0
+                for l in legs:
+                    mid = float(l.get("limit_price") or 0)
+                    if l.get("side") == "sell":
+                        net += mid
+                    else:
+                        net -= mid
+                # For credit spreads net>0, for debit net<0; Alpaca expects positive limit_price
+                mleg_price = abs(net)
+                if mleg_price < 0.05:
+                    mleg_price = 0.15
+                # Build legs payload with ratio_qty = qty
+                qty = int(legs[0].get("qty", 1))
+                payload = {
+                    "order_class": "mleg",
+                    "type": "limit",
+                    "time_in_force": "day",
+                    "limit_price": str(round(mleg_price, 2)),
+                    "legs": [{"symbol": l["symbol"], "side": l["side"], "ratio_qty": str(int(l.get("qty", qty)))} for l in legs],
+                    "client_order_id": f"vega-mleg-{__import__('uuid').uuid4().hex[:8]}",
+                }
+                # MCP trace for mleg
+                trace_mcp_tool("place_option_order", {"mleg": payload}, None)
+                # CLI trace
+                trace_cli(f"alpaca order submit --order-class mleg --legs '{payload['legs']}' --limit-price {payload['limit_price']} --time-in-force day", output="mleg attempt")
+                headers = {"APCA-API-KEY-ID": APCA_API_KEY_ID, "APCA-API-SECRET-KEY": APCA_API_SECRET_KEY}
+                resp = _req.post("https://paper-api.alpaca.markets/v2/orders", headers=headers, json=payload, timeout=15)
+                if resp.status_code < 400:
+                    order = resp.json()
+                    trace_mcp_tool("place_option_order", {"mleg": payload}, order)
+                    _le("mleg_order_submitted", legs=[l["symbol"] for l in legs], limit_price=payload["limit_price"], id=order.get("id"))
+                    return [order]
+                else:
+                    _le("mleg_order_failed", status=resp.status_code, body=resp.text[:500])
+                    # fall through to leg-by-leg
+            except Exception as _e:
+                from src.utils.logger import logger as _lg
+                _lg.warning(f"mleg attempt failed, falling back to legs: {_e}")
         results: List[Dict[str, Any]] = []
-        for leg in legs:
+        for leg in legs_sorted:
             symbol = leg["symbol"]
             side = leg["side"]
             qty = int(leg["qty"])
