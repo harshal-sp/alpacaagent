@@ -13,64 +13,79 @@ class OrderExecutor:
         # discover MCP namespace at startup (skill § Phase 3)
         self.mcp_namespace = get_mcp_namespace_discovery()
 
-    def preview(self, legs: List[Dict[str, Any]], account: Dict[str, Any]) -> str:
+    def preview(self, legs: List[Dict[str, Any]], account: Dict[str, Any], proposal_meta: Dict[str, Any] | None = None) -> str:
         bp = float(account.get("buying_power", 0) or 0)
         eq = float(account.get("equity", 0) or 0)
-        # Fee estimate — NEW: show true cost that could otherwise eat profit
         try:
             from src.utils.fees import estimate_fees
             fees = estimate_fees(legs)
-            fee_line_open = f"│ Fees (open):  ${fees['total_one_way']:.2f} (comm ${fees['commission']:.2f} + slip ${fees['slippage']:.2f}) │"
-            fee_line_rt = f"│ Fees (r/t):   ${fees['total_round_trip']:.2f} (open+close)              │"
+            fee_line_open = f"│ Fees (open):   ${fees['total_one_way']:<6.2f} (comm ${fees['commission']:.2f} + slip ${fees['slippage']:.2f}) │"
+            fee_line_rt = f"│ Fees (r/t):    ${fees['total_round_trip']:<6.2f} (entry + exit reserve)         │"
         except Exception:
             fees = {"total_one_way": 0, "total_round_trip": 0, "commission": 0, "slippage": 0}
-            fee_line_open = "│ Fees (open):  $0.00                             │"
-            fee_line_rt = "│ Fees (r/t):   $0.00                             │"
+            fee_line_open = "│ Fees (open):   $0.00                                   │"
+            fee_line_rt = "│ Fees (r/t):    $0.00                                   │"
+
+        # Calculate Greeks if available
+        greeks_str = ""
+        if proposal_meta and "greeks" in proposal_meta:
+            g = proposal_meta["greeks"]
+            greeks_str = f"│ Net Greeks:    Δ={g.get('net_delta',0):+.1f} | Θ=${g.get('daily_theta',0):+.2f}/d | ν=${g.get('net_vega',0):+.2f} │"
+
         lines = []
-        lines.append("┌─────────────────────────────────────────┐")
-        lines.append("│           ORDER PREVIEW (PAPER)         │")
-        lines.append("├─────────────────────────────────────────┤")
-        lines.append(f"│ Equity:       ${eq:,.2f}                  │")
-        lines.append(f"│ Buying Power: ${bp:,.2f}                  │")
-        lines.append(f"│ Legs:         {len(legs)}                             │")
-        lines.append("├─────────────────────────────────────────┤")
-        total_debit = 0
-        total_credit = 0
+        lines.append("┌─────────────────────────────────────────────────────────┐")
+        lines.append("│              VEGA ORDER PREVIEW (PAPER)                 │")
+        lines.append("├─────────────────────────────────────────────────────────┤")
+        lines.append(f"│ Account Equity: ${eq:<14,.2f} Buying Power: ${bp:<11,.2f} │")
+        lines.append(f"│ Total Legs:     {len(legs):<44} │")
+        lines.append("├─────────────────────────────────────────────────────────┤")
+        total_debit = 0.0
+        total_credit = 0.0
         for i, leg in enumerate(legs, 1):
-            sym = leg.get("symbol", "?")[:22]
+            sym = leg.get("symbol", "?")[:20]
             side = leg.get("side", "?").upper()
             qty = leg.get("qty", 0)
-            price = leg.get("limit_price") or leg.get("price") or 0
-            role = leg.get("role", "")
-            notional = float(price) * 100 * qty if "C" in sym or "P" in sym else float(price) * qty
+            price = float(leg.get("limit_price") or leg.get("price") or 0.0)
+            role = leg.get("role", "")[:12]
+            notional = price * 100.0 * qty if ("C" in sym or "P" in sym or len(sym) > 10) else price * qty
             if side == "BUY":
                 total_debit += notional
             else:
                 total_credit += notional
-            lines.append(f"│ {i}. {side:4} {qty}x {sym:16} @ ${price:.2f} ({role}) │")
-        lines.append("├─────────────────────────────────────────┤")
-        lines.append(f"│ Est. Debit:   ${total_debit:,.2f}                │")
-        lines.append(f"│ Est. Credit:  ${total_credit:,.2f}                │")
-        lines.append(f"│ Est. Net:     ${total_credit - total_debit:.2f} (credit-debit)      │")
+            lines.append(f"│ {i}. {side:<4} {qty:>2}x {sym:<18} @ ${price:>6.2f} ({role:<10}) │")
+
+        lines.append("├─────────────────────────────────────────────────────────┤")
+        lines.append(f"│ Gross Debit:   ${total_debit:<10,.2f} Gross Credit: ${total_credit:<10,.2f} │")
+        net_prem = total_credit - total_debit
+        lines.append(f"│ Est. Net Prem: ${net_prem:<10.2f} (credit-debit)                 │")
         lines.append(fee_line_open)
         lines.append(fee_line_rt)
-        net_after_fees_open = total_credit - total_debit - fees["total_one_way"]
-        net_after_fees_rt = total_credit - total_debit - fees["total_round_trip"]
-        lines.append(f"│ Net open:     ${net_after_fees_open:.2f} (after open fees)      │")
-        lines.append(f"│ Net r/t:      ${net_after_fees_rt:.2f} (if closed)           │")
-        # Highlight if fees eat profit
-        if total_credit > 0 and net_after_fees_rt <= 0:
-            lines.append("│ ⚠ FEES EAT PROFIT — trade rejected by risk gate │")
-        lines.append(f"│ BP after:     ${bp - total_debit + total_credit:.2f} (gross)            │")
-        lines.append("│ Environment:  PAPER (verified)          │")
-        lines.append("│ ⚠ Paper trading only. Not financial advice. │")
-        lines.append("└─────────────────────────────────────────┘")
-        # CLI preview command equivalent
+        net_after_fees_open = net_prem - fees["total_one_way"]
+        net_after_fees_rt = net_prem - fees["total_round_trip"]
+        lines.append(f"│ Net (open):    ${net_after_fees_open:<10.2f} (after entry transaction)       │")
+        lines.append(f"│ Net (r/t):     ${net_after_fees_rt:<10.2f} (holding through exit)        │")
+        if greeks_str:
+            lines.append("├─────────────────────────────────────────────────────────┤")
+            lines.append(greeks_str)
+        if proposal_meta and ("lower_breakeven" in proposal_meta or "breakeven" in proposal_meta):
+            be = proposal_meta.get("breakeven")
+            l_be = proposal_meta.get("lower_breakeven")
+            u_be = proposal_meta.get("upper_breakeven")
+            if l_be and u_be:
+                lines.append(f"│ Breakevens:    Lower=${l_be:.2f} | Upper=${u_be:.2f}                 │")
+            elif be:
+                lines.append(f"│ Breakeven:     ${be:<40.2f} │")
+
+        lines.append("├─────────────────────────────────────────────────────────┤")
+        lines.append(f"│ Environment:   PAPER TRADING (Verified Alpaca Guard)    │")
+        lines.append("│ Notice:        Autonomous defined-risk simulation only. │")
+        lines.append("└─────────────────────────────────────────────────────────┘")
+
         cli_cmds = []
         for leg in legs:
             cmd = f"alpaca order submit --symbol {leg['symbol']} --side {leg['side']} --qty {leg['qty']} --type {leg.get('type','limit')} --limit-price {leg.get('limit_price','')} --time-in-force day --client-order-id vega-{uuid.uuid4().hex[:8]} --dry-run"
             cli_cmds.append(cmd)
-        lines.append("\nCLI equivalent (preview --dry-run):")
+        lines.append("\nCLI Equivalent Traces (--dry-run preview):")
         for c in cli_cmds:
             lines.append(f"  {c}")
             trace_cli(c, output='{"dry_run": true, "preview": true}')

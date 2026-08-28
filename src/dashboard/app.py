@@ -126,37 +126,25 @@ with tabs[0]:
                         st.text(last["preview"])
             else:
                 st.info("No runs yet")
-        st.subheader("Fees & Costs (NEW)")
+        st.subheader("Fees & Costs Model")
         st.markdown("""
-        **Every trade net of:**
-        - `FEE_CONFIG` `src/config.py:63` — `$0.15/contract` commission + `$0.02` regulatory + `5 bps` slippage
-        - One-way open ≈ `$1.70` for 5×2-leg spread, round-trip ≈ `$3.40`
-        - **Risk gate 8:** `Fee gate` `src/risk/gates.py:173` rejects if net credit < `$0.10/share` or fees >60% of gross
-        - Preview `src/execution/orders.py:16` shows `Net open / Net r/t` — if `Net r/t ≤0` trade blocked
-        - Paper P&L is gross; dashboard adds net P&L estimate
+        **Transaction Cost Realism:**
+        - **Commission:** `$0.15/contract` per leg
+        - **Regulatory:** `$0.02/contract` (OCC/ORF)
+        - **Slippage:** `5 bps` modeled on notional
+        - **Gate 8 (Fee Gate):** Rejects trades if net credit < `$0.10/share` or fees eat >60% of gross credit.
+        - **Idempotency:** Every order tracked with unique `client_order_id`.
         """)
-        st.subheader("Risk Gates (Aggressive)")
+        st.subheader("8-Gate Risk Architecture")
         st.markdown("""
-        - Max 20% BP per trade, 85% total
-        - Max 6 positions, 5 contracts/leg
-        - Stop -25% / Take +40% per position
-        - Daily halt -3%, Weekly -6%
-        - No naked options, max 6 positions, 5 contracts/leg
-        - **Fee gate** — ensures fees don't eat profit
-        """)
-        st.subheader("Strategy Modes")
-        st.markdown("""
-        1. **HIGH IV + sideways** → Iron Condor (theta)
-        2. **Low IV + earnings** → Long Straddle (gamma)
-        3. **Trending + high ATR** → Bull Put / Bear Call Spread
-        4. **Momentum** → Long Call/Put
-        """)
-        st.subheader("Strategy Modes")
-        st.markdown("""
-        1. **HIGH IV + sideways** → Iron Condor (theta)
-        2. **Low IV + earnings** → Long Straddle (gamma)
-        3. **Trending + high ATR** → Bull Put / Bear Call Spread
-        4. **Momentum** → Long Call/Put
+        1. **Buying Power:** Max 20% BP/trade, 85% total account
+        2. **Concentration:** Max 30% equity in single ticker
+        3. **Position Cap:** Max 6 concurrent open positions
+        4. **Circuit Breakers:** Daily −3%, Weekly −6% loss halt
+        5. **Greeks Limit:** Net portfolio Delta ≤ 60
+        6. **Expiry Window:** 0–7 DTE defined-risk sprint
+        7. **Order Throttling:** Max 8 pending orders
+        8. **Fee Gate:** Minimum net profit buffer after all friction
         """)
 
 with tabs[1]:
@@ -174,7 +162,6 @@ with tabs[1]:
                 "confidence": (c.get("decision") or {}).get("confidence"),
                 } for c in cycles])
             st.dataframe(dfc.sort_values("ts", ascending=False), use_container_width=True)
-            # detail expander
             for c in reversed(cycles[-5:]):
                 with st.expander(f"{c.get('ts')} — {c.get('status')} — { (c.get('proposal') or {}).get('strategy','NO_TRADE')}"):
                     st.json(c)
@@ -194,27 +181,69 @@ with tabs[1]:
             st.write("No run files")
 
 with tabs[2]:
-    st.subheader("Greeks Explorer (live chain)")
-    sym = st.selectbox("Underlying", ["SPY","QQQ","AAPL","NVDA","TSLA","MSFT"], index=0)
+    st.subheader("Greeks & Strategy Payoff Visualizer")
+    col_g1, col_g2 = st.columns([1, 1])
+    with col_g1:
+        sym = st.selectbox("Underlying", ["SPY","QQQ","AAPL","NVDA","TSLA","MSFT","META","AMD"], index=0)
+    with col_g2:
+        strat_demo = st.selectbox("Payoff Simulation", ["IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "LONG_STRADDLE", "LONG_STRANGLE"], index=0)
+
     try:
         from src.data.alpaca_client import AlpacaClient
         from src.features.greeks import describe_chain_greeks
         client = AlpacaClient(paper=True)
         bars = client.get_bars(sym, days=5)
-        spot = float(bars.iloc[-1]["close"]) if not bars.empty else 500
+        spot = float(bars.iloc[-1]["close"]) if not bars.empty else 500.0
         chain = client.get_option_chain(sym)
         enriched = describe_chain_greeks(spot, chain, T_days=2)
         dfg = pd.DataFrame(enriched)
+
         if not dfg.empty:
-            st.metric("Spot", f"${spot:.2f}")
-            st.dataframe(dfg[["symbol","strike","type","bid","ask","mid","iv","delta","gamma","theta","vega"]].sort_values("strike"), use_container_width=True, height=400)
-            fig = px.scatter(dfg, x="strike", y="mid", color="type", size="volume", hover_data=["delta","iv"], title=f"{sym} Option Mid vs Strike (T~2d)")
-            fig.add_vline(x=spot, line_dash="dash", annotation_text="spot")
-            st.plotly_chart(fig, use_container_width=True)
+            st.metric("Current Spot", f"${spot:.2f}")
+
+            # Plot Payoff Curve for the selected strategy
+            s_range = np.linspace(spot * 0.90, spot * 1.10, 100)
+            payoff = np.zeros_like(s_range)
+
+            if strat_demo == "IRON_CONDOR":
+                # Simulated Condor: Short Put @ 98%, Long Put @ 96%, Short Call @ 102%, Long Call @ 104%, credit = $1.20
+                kp1, kp2 = spot * 0.96, spot * 0.98
+                kc1, kc2 = spot * 1.02, spot * 1.04
+                cr = spot * 0.005
+                payoff = np.where(s_range <= kp1, -(kp2 - kp1 - cr) * 100,
+                         np.where(s_range < kp2, (s_range - kp2 + cr) * 100,
+                         np.where(s_range <= kc1, cr * 100,
+                         np.where(s_range < kc2, (kc1 - s_range + cr) * 100, -(kc2 - kc1 - cr) * 100))))
+            elif strat_demo == "BULL_PUT_SPREAD":
+                kp1, kp2 = spot * 0.96, spot * 0.98
+                cr = spot * 0.004
+                payoff = np.where(s_range >= kp2, cr * 100,
+                         np.where(s_range <= kp1, -(kp2 - kp1 - cr) * 100, (s_range - kp2 + cr) * 100))
+            elif strat_demo == "BEAR_CALL_SPREAD":
+                kc1, kc2 = spot * 1.02, spot * 1.04
+                cr = spot * 0.004
+                payoff = np.where(s_range <= kc1, cr * 100,
+                         np.where(s_range >= kc2, -(kc2 - kc1 - cr) * 100, (kc1 - s_range + cr) * 100))
+            elif strat_demo == "LONG_STRADDLE":
+                deb = spot * 0.015
+                payoff = (np.abs(s_range - spot) - deb) * 100
+            elif strat_demo == "LONG_STRANGLE":
+                kp, kc = spot * 0.98, spot * 1.02
+                deb = spot * 0.008
+                payoff = (np.maximum(0, kp - s_range) + np.maximum(0, s_range - kc) - deb) * 100
+
+            fig_payoff = go.Figure()
+            fig_payoff.add_trace(go.Scatter(x=s_range, y=payoff, mode="lines", name=f"{strat_demo} Payoff", line=dict(color="#00D26A" if np.max(payoff) > 0 else "#FF4B4B", width=3)))
+            fig_payoff.add_hline(y=0, line_dash="dot", line_color="gray")
+            fig_payoff.add_vline(x=spot, line_dash="dash", line_color="#3B82F6", annotation_text=f"Spot ${spot:.2f}")
+            fig_payoff.update_layout(title=f"Defined-Risk Expiration Payoff Profile — {strat_demo} on {sym}", xaxis_title="Underlying Price ($)", yaxis_title="Profit / Loss ($)", height=380)
+            st.plotly_chart(fig_payoff, use_container_width=True)
+
+            st.dataframe(dfg[["symbol","strike","type","bid","ask","mid","iv","delta","gamma","theta","vega"]].sort_values("strike"), use_container_width=True, height=350)
         else:
-            st.info("No chain data")
+            st.info("No chain data available for this symbol")
     except Exception as e:
-        st.error(f"Greeks failed: {e}")
+        st.error(f"Greeks analysis failed: {e}")
 
 with tabs[3]:
     st.subheader("MCP Trace (Judging Evidence)")

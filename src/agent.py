@@ -195,7 +195,7 @@ def run_cycle(dry_run: bool = False, force: bool = False, symbol_filter: str | N
     logger.info(f"\n★ BEST PROPOSAL: {best_decision} => {best_proposal['strategy']} on {best_proposal['symbol']} qty={best_proposal['qty']}")
     log_event("best_proposal", decision=best_decision, proposal=best_proposal, features=best_features)
 
-    preview = executor.preview(best_proposal["legs"], account)
+    preview = executor.preview(best_proposal["legs"], account, best_proposal)
     print("\n" + preview + "\n")
 
     # Final risk re-check (double gate)
