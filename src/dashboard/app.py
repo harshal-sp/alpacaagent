@@ -4,9 +4,11 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 import pandas as pd
+import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
+from src.config import UNIVERSE, UNIVERSE_PRESETS, INDEX_ETFS, MAG_SEVEN, AI_AND_SEMIS, HIGH_BETA_MOMENTUM
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOG_FILE = PROJECT_ROOT / "logs" / "vega.jsonl"
@@ -95,9 +97,17 @@ with tabs[0]:
         try:
             from src.data.alpaca_client import AlpacaClient
             from src.features.indicators import compute_features
+
+            col_u1, col_u2 = st.columns([1, 2])
+            with col_u1:
+                selected_preset = st.selectbox("Preset View", list(UNIVERSE_PRESETS.keys()), index=0)
+            with col_u2:
+                default_symbols = UNIVERSE_PRESETS.get(selected_preset, UNIVERSE)
+                symbols_to_scan = st.multiselect("Active Symbols", options=UNIVERSE, default=default_symbols[:8])
+
             client = AlpacaClient(paper=True)
             rows = []
-            for sym in ["SPY","QQQ","AAPL","NVDA","TSLA"]:
+            for sym in (symbols_to_scan or UNIVERSE[:8]):
                 try:
                     bars = client.get_bars(sym, days=60)
                     chain = client.get_option_chain(sym)
@@ -184,7 +194,13 @@ with tabs[2]:
     st.subheader("Greeks & Strategy Payoff Visualizer")
     col_g1, col_g2 = st.columns([1, 1])
     with col_g1:
-        sym = st.selectbox("Underlying", ["SPY","QQQ","AAPL","NVDA","TSLA","MSFT","META","AMD"], index=0)
+        sym = st.selectbox("Underlying", UNIVERSE, index=0)
+        tag = ("📊 Index ETF" if sym in INDEX_ETFS
+               else "🎯 Mag 7" if sym in MAG_SEVEN
+               else "🤖 AI & Semiconductor" if sym in AI_AND_SEMIS
+               else "🚀 High-Beta Momentum" if sym in HIGH_BETA_MOMENTUM
+               else "📈 Growth Equity")
+        st.caption(f"Category: **{tag}**")
     with col_g2:
         strat_demo = st.selectbox("Payoff Simulation", ["IRON_CONDOR", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "LONG_STRADDLE", "LONG_STRANGLE"], index=0)
 

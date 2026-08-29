@@ -14,7 +14,7 @@
 
 ## ⚡ Executive Summary
 
-**Vega** is a high-performance, autonomous options quantitative trading agent designed specifically for short-horizon **0–7 DTE defined-risk structures** on high-liquidity underlyings (`SPY`, `QQQ`, `AAPL`, `NVDA`, `TSLA`, `MSFT`, `META`, `AMD`). 
+**Vega** is a high-performance, autonomous options quantitative trading agent designed specifically for short-horizon **0–7 DTE defined-risk structures** on high-liquidity and high-performing underlyings (`SPY`, `QQQ`, `IWM`, `SMH`, `NVDA`, `AAPL`, `MSFT`, `AMZN`, `GOOGL`, `META`, `TSLA`, `AMD`, `PLTR`, `AVGO`, `COIN`, `NFLX`). 
 
 Vega combines quantitative volatility modeling (**Volatility Risk Premium (VRP)**, **Black-Scholes Greeks**, **Bollinger Squeeze detection**, and **IV Skew**) with a finance-native **124B MoE LLM (Ling 3.0 Flash Fin)**. It systematically selects between **8 defined-risk options strategies**, evaluates proposals through an uncompromising **8-Gate Deterministic Risk Barrier** (including realistic commissions, regulatory fees, and slippage gating), and submits orders via **Alpaca Trading API** with synchronized **MCP Server** and **CLI** audit traces.
 
@@ -201,7 +201,7 @@ sequenceDiagram
     participant CLI as Alpaca CLI Wrapper
     participant Dash as Streamlit Dashboard
 
-    Agent->>Agent: Evaluate Universe (SPY, QQQ, AAPL, NVDA, TSLA, MSFT, META, AMD)
+    Agent->>Agent: Evaluate Universe (CORE, MAG 7, AI & Semis, Momentum, Index ETFs)
     Agent->>Risk: validate_trade(account, positions, orders, proposal)
     Risk-->>Agent: Passed (all 8 gates verified)
     Agent->>Agent: Generate Idempotent client_order_id (e.g. vega-mleg-4f89a1c2)

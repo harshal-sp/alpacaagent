@@ -4,21 +4,22 @@ from typing import List, Dict
 import requests
 from src.utils.logger import logger
 
+NON_EARNINGS_TICKERS = {"SPY", "QQQ", "IWM", "SMH", "SOXX", "DIA", "XLF", "TLT", "VXX", "HYG"}
+
 def get_upcoming_earnings(tickers: List[str], days_ahead: int = 7) -> List[Dict]:
     """Try Finnhub/yfinance, fallback to static watchlist for hackathon week."""
     upcoming = []
+    # Filter out ETFs which do not have corporate earnings
+    equity_tickers = [t for t in tickers if t.upper() not in NON_EARNINGS_TICKERS]
     # Try yfinance earnings dates
     try:
         import yfinance as yf
-        for t in tickers:
+        for t in equity_tickers:
             try:
                 tk = yf.Ticker(t)
                 cal = tk.calendar
                 if cal is not None and not cal.empty:
-                    # calendar is dict or df depending on version
                     logger.info(f"yfinance calendar for {t}: {cal}")
-                    # parse earnings date if available
-                    # Fallback: try get_earnings_dates
                     try:
                         ed = tk.get_earnings_dates(limit=4)
                         if ed is not None and not ed.empty:
@@ -34,11 +35,13 @@ def get_upcoming_earnings(tickers: List[str], days_ahead: int = 7) -> List[Dict]
     except Exception:
         pass
     # Static hackathon week 2026-08-28 to 2026-09-04 expectations
-    # Known US earnings in this window often include CRM, AVGO, DELL etc — add as watch
+    # Known US earnings in this window often include NVDA, CRM, AVGO, DELL, HPQ, PLTR, etc.
     static = [
         {"ticker": "NVDA", "date": "2026-09-02", "days_ahead": 2, "note": "expected earnings window"},
         {"ticker": "CRM", "date": "2026-09-03", "days_ahead": 3, "note": "expected"},
         {"ticker": "AVGO", "date": "2026-09-04", "days_ahead": 4, "note": "expected"},
+        {"ticker": "DELL", "date": "2026-08-29", "days_ahead": 1, "note": "expected"},
+        {"ticker": "PLTR", "date": "2026-09-05", "days_ahead": 5, "note": "expected watch"},
     ]
     # merge if not already present
     existing = {u["ticker"] for u in upcoming}

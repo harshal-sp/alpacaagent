@@ -185,8 +185,15 @@ class AlpacaClient:
             logger.warning(f"yfinance fallback failed for {symbol}: {e2}")
         # synthetic fallback for dry-run
         logger.warning(f"Returning synthetic bars for {symbol}")
-        dates = pd.date_range(end=datetime.now(), periods=days, freq="B")
-        base = 580 if symbol == "SPY" else 480 if symbol == "QQQ" else 200
+        base_map = {
+            "SPY": 580.0, "QQQ": 480.0, "IWM": 220.0, "SMH": 260.0,
+            "NVDA": 130.0, "AAPL": 230.0, "MSFT": 430.0, "AMZN": 190.0,
+            "GOOGL": 170.0, "META": 520.0, "TSLA": 220.0, "AMD": 150.0,
+            "PLTR": 180.0, "AVGO": 160.0, "COIN": 210.0, "NFLX": 680.0,
+            "UBER": 75.0, "TSM": 170.0, "MU": 110.0, "ARM": 130.0,
+            "CRM": 270.0, "DELL": 120.0, "HPQ": 35.0,
+        }
+        base = base_map.get(symbol.upper(), 150.0)
         import numpy as np
         closes = base + np.cumsum(np.random.randn(days) * 1.2)
         return pd.DataFrame({

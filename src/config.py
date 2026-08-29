@@ -35,10 +35,36 @@ OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")
 AI_GATEWAY_API_KEY = os.getenv("AI_GATEWAY_API_KEY", "")
 AI_GATEWAY_BASE_URL = os.getenv("AI_GATEWAY_BASE_URL", "https://ai-gateway.vercel.sh/v1")
 
-# --- Universe (aggressive: focus + earnings names) ---
-UNIVERSE = ["SPY", "QQQ", "AAPL", "NVDA", "TSLA", "MSFT", "META", "AMD"]
-# Earnings calendar for this hackathon week (Aug 28 - Sep 4 2026): scan dynamically too
-EARNINGS_WATCH = ["NVDA", "CRM", "DELL", "HPQ", "AVGO"]
+# --- Universe (High-Performing Stocks & Liquid Options Presets) ---
+INDEX_ETFS = ["SPY", "QQQ", "IWM", "SMH"]
+MAG_SEVEN = ["AAPL", "NVDA", "MSFT", "AMZN", "GOOGL", "META", "TSLA"]
+AI_AND_SEMIS = ["NVDA", "AMD", "AVGO", "TSM", "MU", "ARM"]
+HIGH_BETA_MOMENTUM = ["PLTR", "COIN", "NFLX", "UBER", "CRM"]
+
+UNIVERSE_PRESETS = {
+    "CORE": ["SPY", "QQQ", "AAPL", "NVDA", "TSLA", "MSFT", "META", "AMD", "AMZN", "GOOGL", "PLTR", "AVGO", "COIN", "NFLX", "IWM", "SMH"],
+    "MAG_SEVEN": MAG_SEVEN,
+    "INDEX_ETFS": INDEX_ETFS,
+    "AI_AND_SEMIS": AI_AND_SEMIS,
+    "HIGH_BETA_MOMENTUM": HIGH_BETA_MOMENTUM,
+    "TECH": ["QQQ", "AAPL", "NVDA", "MSFT", "AMZN", "GOOGL", "META", "AMD", "PLTR", "AVGO", "TSM", "MU", "ARM", "SMH"],
+    "ALL": list(dict.fromkeys(INDEX_ETFS + MAG_SEVEN + AI_AND_SEMIS + HIGH_BETA_MOMENTUM + ["DELL", "HPQ"])),
+}
+
+def parse_universe(env_val: str | None = None) -> list:
+    val = (env_val if env_val is not None else os.getenv("TRADING_UNIVERSE", "")).strip()
+    if not val:
+        return UNIVERSE_PRESETS["CORE"]
+    val_upper = val.upper()
+    if val_upper in UNIVERSE_PRESETS:
+        return UNIVERSE_PRESETS[val_upper]
+    symbols = [s.strip().upper() for s in val.split(",") if s.strip()]
+    return symbols if symbols else UNIVERSE_PRESETS["CORE"]
+
+UNIVERSE = parse_universe()
+
+# Earnings calendar for high-beta / catalyst watchlist
+EARNINGS_WATCH = ["NVDA", "CRM", "DELL", "HPQ", "AVGO", "PLTR", "AMD", "COIN", "MU", "ARM", "TSM"]
 
 # --- Risk — aggressive profile ---
 RISK_CONFIG = {
