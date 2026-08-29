@@ -1,7 +1,14 @@
 """Vega Dashboard — Streamlit P&L + greeks + trade rationale viewer."""
+import sys
+from pathlib import Path
+
+# Add project root to sys.path for standalone streamlit execution
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import json
 import os
-from pathlib import Path
 from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
@@ -10,7 +17,6 @@ import plotly.graph_objects as go
 import plotly.express as px
 from src.config import UNIVERSE, UNIVERSE_PRESETS, INDEX_ETFS, MAG_SEVEN, AI_AND_SEMIS, HIGH_BETA_MOMENTUM
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOG_FILE = PROJECT_ROOT / "logs" / "vega.jsonl"
 CYCLES_FILE = PROJECT_ROOT / "logs" / "cycles.jsonl"
 RUNS_DIR = PROJECT_ROOT / "runs"
