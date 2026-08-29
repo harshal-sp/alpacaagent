@@ -55,18 +55,22 @@ APCA_API_KEY_ID=... APCA_API_SECRET_KEY=... python -m src.agent --force
 ```
 5. Copy `Account ID` (PA...) from dashboard into lablab submission form.
 
-## 7) Autonomous cron (optional, local)
+## 7) Fast VPS Automated Setup
 ```bash
-chmod +x src/jobs/cron.sh
-# Edit cron:
-crontab -e
-# Add:
-# */15 9-16 * * 1-5 /home/harshal/fun/lablabai/src/jobs/cron.sh >> /home/harshal/fun/lablabai/logs/cron.log 2>&1
+# On your Linux VPS (Ubuntu/Debian):
+bash scripts/deploy_vps.sh
 ```
 
-## 8) Tests
+## 8) Autonomous 24/7 Service (systemd / tmux)
 ```bash
-python -m pytest tests/ -v
+# Option A: Run in background with tmux
+tmux new -s vega ".venv/bin/python -m src.agent --loop --interval 900"
+# Detach with: Ctrl+B then D
+
+# Option B: Run with cron
+chmod +x src/jobs/cron.sh
+# In crontab -e:
+# */15 9-16 * * 1-5 /path/to/lablabai/src/jobs/cron.sh >> /path/to/lablabai/logs/cron.log 2>&1
 ```
 
 ## MCP Setup (for ChatGPT / Claude / Cursor)
