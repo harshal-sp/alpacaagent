@@ -35,9 +35,13 @@ def _get_min_width(spot: float) -> float:
     return 0.5
 
 def build_legs(decision: Dict[str, Any], spot: float, chain: List[Dict[str, Any]], buying_power: float) -> Dict[str, Any]:
-    """Given decision['strategy'], build aggressive defined-risk legs for 0-3 DTE."""
+    """Given decision['strategy'], build defined-risk legs for 0-3 DTE — EM-aware wings."""
     strat = decision.get("strategy", "NO_TRADE")
     symbol = decision.get("symbol", "SPY")
+    exp_move = float(decision.get("expected_move_pct", 1.5) or 1.5)
+    # Adaptive wing width: scale with expected move and spot tier (tighter when cheap gamma, wider when rich IV)
+    # Used to bias delta targets
+    em_factor = max(0.7, min(1.4, exp_move / 1.5))
     for cc in chain:
         cc["spot"] = spot
 
@@ -51,13 +55,16 @@ def build_legs(decision: Dict[str, Any], spot: float, chain: List[Dict[str, Any]
         calls = [c for c in enriched if c["type"] == "call"]
         if not calls:
             return None
-        return min(calls, key=lambda c: abs(c.get("delta", 0.20) - delta_target))
+        # EM-adjusted: widen when move expected large
+        adj = delta_target * em_factor
+        return min(calls, key=lambda c: abs(c.get("delta", 0.20) - adj))
 
     def otm_put(delta_target=-0.15):
         puts = [c for c in enriched if c["type"] == "put"]
         if not puts:
             return None
-        return min(puts, key=lambda c: abs(c.get("delta", -0.20) - delta_target))
+        adj = delta_target * em_factor
+        return min(puts, key=lambda c: abs(c.get("delta", -0.20) - adj))
 
     rationale = decision.get("rationale", "")
     min_req_width = _get_min_width(spot)

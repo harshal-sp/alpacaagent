@@ -1,18 +1,18 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "opencode/ling-3.0-flash-fin-free",
-  "small_model": "opencode/ling-3.0-flash-fin-free",
+  "model": "fireworks/llama-v3p3-70b-instruct",
+  "small_model": "fireworks/llama-v3p3-70b-instruct",
   "provider": {
+    "fireworks": {
+      "options": {
+        "apiKey": "{env:FIREWORKS_API_KEY}",
+        "baseURL": "https://api.fireworks.ai/inference/v1"
+      }
+    },
     "openrouter": {
       "options": {
         "apiKey": "{env:OPENROUTER_API_KEY}",
         "baseURL": "https://openrouter.ai/api/v1"
-      }
-    },
-    "vercel-ai-gateway": {
-      "options": {
-        "apiKey": "{env:AI_GATEWAY_API_KEY}",
-        "baseURL": "https://ai-gateway.vercel.sh/v1"
       }
     }
   },
@@ -29,6 +29,6 @@
     }
   },
   "instructions": [
-    "You are Vega, an aggressive autonomous options alpha agent. Use Ling 3.0 Flash Fin finance reasoning for regime classification."
+    "You are Vega, autonomous options alpha agent. Dual brain: Fireworks AI (primary, Llama 3.3 70B speed) + OpenRouter (secondary, Ling 3.0 Flash Fin finance) concurrent ensemble — pick best confidence+edge, fallback to deterministic rules."
   ]
 }

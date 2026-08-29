@@ -1,4 +1,4 @@
-"""Technical indicators + IV rank + regime features — v3 with VRP, IV Skew, Bollinger Squeeze, MACD, VWAP."""
+"""Technical indicators + IV rank + regime features — v4 Fireworks: VRP, Skew, Squeeze, MACD, VWAP, EM, RV term, OI, soft regime."""
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, List
@@ -115,6 +115,69 @@ def support_resistance(df: pd.DataFrame) -> Dict[str, float]:
         "dist_to_sup_pct": round((last - low20)/last*100, 2) if last else 0,
     }
 
+def _rv(close: pd.Series, period: int) -> float:
+    if len(close) < period + 1:
+        return 20.0
+    v = close.pct_change().rolling(period).std().iloc[-1] * np.sqrt(252) * 100
+    return float(v) if not pd.isna(v) else 20.0
+
+def _expected_move_pct(chain: List[Dict[str, Any]], spot: float) -> float:
+    if not chain or spot <= 0:
+        return 0.0
+    calls = [c for c in chain if c.get("type") == "call"]
+    puts = [c for c in chain if c.get("type") == "put"]
+    if not calls or not puts:
+        return 0.0
+    atm_call = min(calls, key=lambda c: abs(c.get("strike", spot) - spot))
+    atm_put = min(puts, key=lambda c: abs(c.get("strike", spot) - spot))
+    # mid price helper inline
+    def mid(c):
+        bid, ask, last = c.get("bid", 0) or 0, c.get("ask", 0) or 0, c.get("last", 0) or 0
+        if bid and ask and ask > bid and bid > 0.05:
+            return (bid + ask) / 2.0
+        return float(last or bid or ask or 0)
+    straddle_mid = mid(atm_call) + mid(atm_put)
+    return round(straddle_mid / spot * 100, 2) if spot else 0.0
+
+def _oi_concentration(chain: List[Dict[str, Any]], spot: float) -> Dict[str, float]:
+    if not chain or spot <= 0:
+        return {"oi_concentration": 0.0, "max_oi_strike": 0.0}
+    # find strike with max OI within 5% band
+    band = [c for c in chain if abs(c.get("strike", spot) - spot) / spot < 0.05 and c.get("openInterest")]
+    if not band:
+        return {"oi_concentration": 0.0, "max_oi_strike": 0.0}
+    best = max(band, key=lambda c: c.get("openInterest", 0) or 0)
+    max_oi = float(best.get("openInterest", 0) or 0)
+    total_oi = sum(float(c.get("openInterest", 0) or 0) for c in band)
+    conc = max_oi / total_oi if total_oi else 0
+    return {"oi_concentration": round(conc, 3), "max_oi_strike": float(best.get("strike", 0))}
+
+def _soft_regime_scores(ivr: float, vrp: float, trend: str, bb_width: float, bb_squeeze: bool, atr_pct: float, macd_hist: float, vol_ratio: float) -> Dict[str, float]:
+    """Return soft scores [0,1] for each regime instead of hard threshold."""
+    def clamp(x): return max(0.0, min(1.0, x))
+    # Range high IV: high VRP/IVR + sideways + compressed width
+    s_range = 0.0
+    s_range += clamp((ivr - 15) / 25) * 0.35
+    s_range += clamp(vrp / 6.0) * 0.35
+    s_range += (0.2 if trend == "sideways" else 0.0)
+    s_range += clamp((5.5 - bb_width) / 5.5) * 0.1
+    # Low vol compression
+    s_low = 0.0
+    s_low += (0.4 if bb_squeeze else clamp((3.5 - bb_width) / 3.5) * 0.3)
+    s_low += clamp((25 - ivr) / 25) * 0.3
+    s_low += clamp((1.5 - atr_pct) / 1.5) * 0.3
+    # Trending high vol
+    s_trend = 0.0
+    s_trend += (0.3 if trend in ("uptrend", "downtrend") else 0.0)
+    s_trend += clamp(atr_pct / 2.5) * 0.35
+    s_trend += clamp(abs(macd_hist) / 1.0) * 0.35
+    # Volatile
+    s_vol = 0.0
+    s_vol += clamp((vol_ratio - 1.0) / 1.0) * 0.5
+    s_vol += clamp((ivr - 25) / 40) * 0.5
+    return {"range_high_iv": round(clamp(s_range), 3), "low_vol_compression": round(clamp(s_low), 3), "trending_high_vol": round(clamp(s_trend), 3), "volatile": round(clamp(s_vol), 3), "mixed": 0.3}
+
+
 def compute_features(symbol: str, bars: pd.DataFrame, chain: list[Dict[str, Any]] | None = None) -> Dict[str, Any]:
     if bars.empty:
         return {"symbol": symbol, "error": "no bars"}
@@ -155,20 +218,24 @@ def compute_features(symbol: str, bars: pd.DataFrame, chain: list[Dict[str, Any]
     skew = calculate_iv_skew(chain or [], last)
 
     # Volatility Risk Premium (VRP): Implied Vol (Annualized %) - Realized Vol (Annualized %)
-    # Positive VRP indicates implied volatility is rich relative to historical move (edge for selling theta)
     vrp = (avg_iv * 100) - vol_20
-
-    # Regime heuristic v3 — integrates VRP, Squeeze, Skew, MACD, Volume
+    # RV term structure
+    rv_5 = _rv(close, 5)
+    rv_60 = _rv(close, 60)
+    rv_term = "contango" if rv_5 < vol_20 < rv_60 else "backwardation" if rv_5 > vol_20 else "flat"
+    # Expected move from ATM straddle
+    exp_move_pct = _expected_move_pct(chain or [], last)
+    oi_stats = _oi_concentration(chain or [], last)
+    # Soft regime scoring (v4) + hard hint for backward compat
+    scores = _soft_regime_scores(ivr, vrp, trend, bb["width_pct"], bb["is_squeeze"], atr_pct, macd_val["hist"], vol_ratio)
+    # Pick regime by max soft score, apply hysteresis-friendly thresholds
+    regime_hint = max(scores, key=lambda k: scores[k])
+    # Hard override to keep legacy behavior familiar to LLM prompt when scores weak
     if (ivr > 28 or vrp > 4.0) and trend == "sideways" and bb["width_pct"] < 4.5:
-        regime_hint = "range_high_iv"  # Theta income / Iron Condor
-    elif (ivr < 20 or bb["is_squeeze"]) and atr_pct < 1.3:
-        regime_hint = "low_vol_compression"  # Pre-event Gamma / Straddle / Strangle
-    elif trend in ("uptrend", "downtrend") and (atr_pct > 1.2 or abs(macd_val["hist"]) > 0.4):
-        regime_hint = "trending_high_vol"  # Directional Spreads (Bull Put / Bear Call)
-    elif vol_ratio > 1.6 and ivr > 35:
-        regime_hint = "volatile"  # Heightened risk — avoid naked/tight wings
-    else:
-        regime_hint = "mixed"
+        if scores["range_high_iv"] > 0.45:
+            regime_hint = "range_high_iv"
+    if (ivr < 20 or bb["is_squeeze"]) and atr_pct < 1.3 and scores["low_vol_compression"] > 0.45:
+        regime_hint = "low_vol_compression"
 
     return {
         "symbol": symbol,
@@ -205,6 +272,13 @@ def compute_features(symbol: str, bars: pd.DataFrame, chain: list[Dict[str, Any]
         "put_call_iv_ratio": skew["put_call_iv_ratio"],
         "skew_spread_pct": skew["skew_spread_pct"],
         "regime_hint": regime_hint,
+        "regime_scores": scores,
+        "realized_vol_5d_annual": round(float(rv_5), 2),
+        "realized_vol_60d_annual": round(float(rv_60), 2),
+        "rv_term_structure": rv_term,
+        "expected_move_pct": exp_move_pct,
+        "oi_concentration": oi_stats["oi_concentration"],
+        "max_oi_strike": oi_stats["max_oi_strike"],
         "bars": len(bars),
     }
 

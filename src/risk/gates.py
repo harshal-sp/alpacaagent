@@ -70,11 +70,37 @@ def check_daily_loss(account: Dict[str, Any], initial_equity: float = 100000) ->
         return RiskCheckResult(False, f"Gate 4 (Circuit Breaker): Weekly loss {total_chg_pct:.2f}% <= -{RISK_CONFIG['weekly_loss_halt_pct']}%", {"total_chg": total_chg_pct}, gate_id=4)
     return RiskCheckResult(True, f"Gate 4 (Circuit Breaker): Equity ${equity:,.2f} (Daily {daily_chg_pct:+.2f}%, Total {total_chg_pct:+.2f}%)", {"daily_chg": round(daily_chg_pct, 2), "total_chg": round(total_chg_pct, 2)}, gate_id=4)
 
+def check_correlation(positions: List[Dict[str, Any]], new_symbol: str) -> RiskCheckResult:
+    """Gate 2b: Correlation — avoid stacking highly correlated underlyings."""
+    CORR_CLUSTERS = {
+        "index": {"SPY", "QQQ", "IWM", "DIA"},
+        "magsemi": {"NVDA", "AMD", "AVGO", "TSM", "MU", "ARM", "SMH", "SOXX"},
+        "mega": {"AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA"},
+        "beta": {"PLTR", "COIN", "NFLX", "UBER", "CRM"},
+    }
+    def cluster_of(sym: str) -> str | None:
+        for name, members in CORR_CLUSTERS.items():
+            if sym.upper() in members:
+                return name
+        return None
+    new_cluster = cluster_of(new_symbol)
+    if not new_cluster or len(positions) < 2:
+        return RiskCheckResult(True, f"Gate 2b (Correlation): {new_symbol} cluster {new_cluster or 'unique'} — pass", gate_id=2)
+    count_in_cluster = 0
+    for p in positions:
+        sym = (p.get("underlying_symbol") or p.get("asset_symbol") or p.get("symbol", "")[:4]).strip().upper()
+        if cluster_of(sym) == new_cluster:
+            count_in_cluster += 1
+    if count_in_cluster >= 2:
+        return RiskCheckResult(False, f"Gate 2b (Correlation): {new_symbol} cluster {new_cluster} already has {count_in_cluster} positions — concentration risk", {"cluster": new_cluster, "count": count_in_cluster}, gate_id=2)
+    return RiskCheckResult(True, f"Gate 2b (Correlation): {new_symbol} cluster {new_cluster} count {count_in_cluster}/2 — pass", gate_id=2)
+
 def check_greeks_portfolio(positions: List[Dict[str, Any]], proposal_legs: List[Dict[str, Any]]) -> RiskCheckResult:
-    """Gate 5: Portfolio Greeks boundary (Net Delta <= 60)."""
-    # Calculate proposed trade Greeks
+    """Gate 5: Portfolio Greeks boundary (Net Delta <= 60, Vega/Gamma monitored)."""
     prop_greeks = calculate_portfolio_greeks(proposal_legs)
     new_delta = prop_greeks.get("net_delta", 0.0)
+    new_vega = prop_greeks.get("net_vega", 0.0)
+    new_gamma = prop_greeks.get("net_gamma", 0.0)
 
     total_delta = new_delta
     for p in positions:
@@ -83,8 +109,11 @@ def check_greeks_portfolio(positions: List[Dict[str, Any]], proposal_legs: List[
         except Exception:
             pass
     if abs(total_delta) > RISK_CONFIG["max_portfolio_delta"]:
-        return RiskCheckResult(False, f"Gate 5 (Greeks): Net Delta {total_delta:.1f} > Limit {RISK_CONFIG['max_portfolio_delta']}", {"delta": total_delta}, gate_id=5)
-    return RiskCheckResult(True, f"Gate 5 (Greeks): Net Delta {total_delta:.1f} within limit ({RISK_CONFIG['max_portfolio_delta']})", {"delta": round(total_delta, 2), "daily_theta": prop_greeks.get("daily_theta")}, gate_id=5)
+        return RiskCheckResult(False, f"Gate 5 (Greeks): Net Delta {total_delta:.1f} > Limit {RISK_CONFIG['max_portfolio_delta']}", {"delta": total_delta, "vega": new_vega, "gamma": new_gamma}, gate_id=5)
+    # Soft warn on large vega (optional block threshold 2x delta limit)
+    if abs(new_vega) > 800:
+        logger.warning(f"Large vega exposure: {new_vega}")
+    return RiskCheckResult(True, f"Gate 5 (Greeks): Net Delta {total_delta:.1f} within limit ({RISK_CONFIG['max_portfolio_delta']}) | Vega {new_vega:.1f} Gamma {new_gamma:.2f}", {"delta": round(total_delta, 2), "daily_theta": prop_greeks.get("daily_theta"), "vega": new_vega, "gamma": new_gamma}, gate_id=5)
 
 def check_option_expiry(chain: List[Dict[str, Any]]) -> RiskCheckResult:
     """Gate 6: Expiration window (0–7 DTE defined sprint)."""
@@ -146,6 +175,7 @@ def validate_trade(
     checks = [
         check_buying_power(account, est_cost),
         check_concentration(account, positions, underlying, est_cost),
+        check_correlation(positions, underlying),
         check_position_count(positions),
         check_daily_loss(account, initial_equity),
         check_greeks_portfolio(positions, legs),

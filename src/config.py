@@ -18,22 +18,40 @@ ALPACA_DATA_URL = "https://data.alpaca.markets"
 if not APCA_PAPER:
     raise RuntimeError("APCA_PAPER must be true — live trading is blocked in this skill.")
 
-# --- LLM — Ling 3.0 Flash Fin (primary finance-native) → Featherless → OpenAI → Rules ---
-# Ling 3.0 Flash Fin via Opencode/Vercel AI Gateway/OpenRouter (free through Sep 25 2026)
-LING_API_KEY = os.getenv("LING_API_KEY", "") or os.getenv("OPENROUTER_API_KEY", "") or os.getenv("AI_GATEWAY_API_KEY", "")
-LING_BASE_URL = os.getenv("LING_BASE_URL", "https://openrouter.ai/api/v1")  # or https://ai-gateway.vercel.sh/v1 or https://api.opencode.ai/v1
-LING_MODEL = os.getenv("LING_MODEL", "inclusionai/ling-3.0-flash-fin:free")  # free alias for inclusionai/ling-3.0-flash-fin
-# Opencode direct (uses opencode's proxy, no user key needed when running via `opencode run -m opencode/ling-3.0-flash-fin-free`)
-OPENCODE_LING_MODEL = os.getenv("OPENCODE_LING_MODEL", "opencode/ling-3.0-flash-fin-free")
+# --- LLM — Dual-provider: Fireworks AI (primary, speed) + OpenRouter (secondary, finance + free) ---
+# Both are OpenAI-compatible; classify() runs them concurrently and picks best via ensemble.
+# Fireworks: https://app.fireworks.ai/settings/users/api-keys  base https://api.fireworks.ai/inference/v1
+FIREWORKS_API_KEY = os.getenv("FIREWORKS_API_KEY", "")
+FIREWORKS_BASE_URL = os.getenv("FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference/v1")
+FIREWORKS_MODEL = os.getenv("FIREWORKS_MODEL", "accounts/fireworks/models/llama-v3p3-70b-instruct")
+# Alt Fireworks: accounts/fireworks/models/deepseek-v3p1 | qwen3-235b-a22b-instruct-2507 | fireworks/ling-3-flash
+
+# OpenRouter: https://openrouter.ai/keys  base https://openrouter.ai/api/v1
+# Recommended free finance-tuned: inclusionai/ling-3.0-flash-fin:free | deepseek/deepseek-r1:free | qwen/qwen3-235b-a22b:free
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", os.getenv("LING_MODEL", "inclusionai/ling-3.0-flash-fin:free"))
+OPENROUTER_REFERRER = os.getenv("OPENROUTER_REFERRER", "https://lablab.ai")
+OPENROUTER_TITLE = os.getenv("OPENROUTER_TITLE", "Vega Options Alpha")
+
+# Legacy aliases (backward compat)
+LING_API_KEY = os.getenv("LING_API_KEY", "") or OPENROUTER_API_KEY or FIREWORKS_API_KEY
+LING_BASE_URL = os.getenv("LING_BASE_URL", OPENROUTER_BASE_URL)
+LING_MODEL = os.getenv("LING_MODEL", OPENROUTER_MODEL)
+OPENCODE_LING_MODEL = os.getenv("OPENCODE_LING_MODEL", FIREWORKS_MODEL)
 FEATHERLESS_API_KEY = os.getenv("FEATHERLESS_API_KEY", "")
-FEATHERLESS_BASE_URL = os.getenv("FEATHERLESS_BASE_URL", "https://api.featherless.ai/v1")
-FEATHERLESS_MODEL = os.getenv("FEATHERLESS_MODEL", "meta-llama/Meta-Llama-3.1-70B-Instruct")
+FEATHERLESS_BASE_URL = os.getenv("FEATHERLESS_BASE_URL", FIREWORKS_BASE_URL)
+FEATHERLESS_MODEL = os.getenv("FEATHERLESS_MODEL", FIREWORKS_MODEL)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")
-# Vercel AI Gateway alternative
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", FIREWORKS_MODEL)
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", FIREWORKS_BASE_URL)
 AI_GATEWAY_API_KEY = os.getenv("AI_GATEWAY_API_KEY", "")
-AI_GATEWAY_BASE_URL = os.getenv("AI_GATEWAY_BASE_URL", "https://ai-gateway.vercel.sh/v1")
+AI_GATEWAY_BASE_URL = os.getenv("AI_GATEWAY_BASE_URL", FIREWORKS_BASE_URL)
+
+# LLM ensemble tuning
+LLM_CONCURRENT = os.getenv("LLM_CONCURRENT", "true").lower() in ("1", "true", "yes")
+LLM_TIMEOUT_S = int(os.getenv("LLM_TIMEOUT_S", "18"))
+LLM_CACHE_TTL_S = int(os.getenv("LLM_CACHE_TTL_S", "90"))
 
 # --- Universe (High-Performing Stocks & Liquid Options Presets) ---
 INDEX_ETFS = ["SPY", "QQQ", "IWM", "SMH"]

@@ -1,7 +1,8 @@
-"""Vega — autonomous aggressive options alpha agent — main loop."""
+"""Vega — autonomous aggressive options alpha agent — main loop (Fireworks AI, parallel)."""
 import argparse
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List
@@ -24,19 +25,69 @@ BANNER = """
 ██║   ██║█████╗  ██║  ███╗███████║  Vega — Autonomous Options Alpha Agent
 ╚██╗ ██╔╝██╔══╝  ██║   ██║██╔══██║  Aggressive | Paper-Only | MCP+CLI
  ╚████╔╝ ███████╗╚██████╔╝██║  ██║  Alpaca AI Trading Agents Hackathon
-  ╚═══╝  ╚══════╝ ╚═════╝ ╚═╝  ╚═╝
+  ╚═══╝  ╚══════╝ ╚═════╝ ╚═╝  ╚═╝  Fireworks AI • 0-7 DTE • Parallel
 """
+
+def _evaluate_one(symbol: str, client: AlpacaClient, earnings: List[Dict], account: Dict[str, Any], positions: List[Dict], orders: List[Dict], bp: float) -> Dict[str, Any]:
+    """Evaluate single symbol — isolated for threading."""
+    try:
+        bars = client.get_bars(symbol, days=60)
+        chain = client.get_option_chain(symbol)
+        features = compute_features(symbol, bars, chain)
+        try:
+            sentiment = get_news_sentiment(symbol)
+            features["news_sentiment"] = sentiment.get("sentiment")
+            features["news_confidence"] = sentiment.get("confidence")
+            features["news_headline"] = sentiment.get("headline", "")[:120]
+        except Exception:
+            features["news_sentiment"] = "neutral"
+
+        if not chain:
+            return {"symbol": symbol, "features": features, "decision": {"strategy": "NO_TRADE", "confidence": 0, "rationale": "no chain"}, "proposal": None, "risk_passed": False, "risk_reasons": ["no option chain"], "score": -1}
+
+        decision = classify(features, earnings)
+        try:
+            if features.get("news_sentiment") == decision.get("bias") and features.get("news_sentiment") != "neutral":
+                decision["confidence"] = min(0.95, decision.get("confidence", 0.5) + 0.07)
+                decision["rationale"] = (decision.get("rationale", "") + f" + news {features['news_sentiment']}")[:220]
+        except Exception:
+            pass
+
+        # Diversification dampener
+        existing_underlyings = {p.get("symbol","")[:4] for p in positions}
+        if symbol[:3] in {u[:3] for u in existing_underlyings} and len(positions) >= 2:
+            decision["confidence"] = max(0.1, decision.get("confidence",0) * 0.85)
+
+        conf = decision.get("confidence", 0)
+        edge = decision.get("edge_bps", 0)
+        score = conf + edge/10000.0
+
+        if decision.get("strategy") == "NO_TRADE":
+            return {"symbol": symbol, "features": features, "decision": decision, "proposal": None, "risk_passed": False, "risk_reasons": ["NO_TRADE"], "score": score, "conf": conf}
+
+        spot = features.get("last", 500)
+        proposal = build_legs(decision, spot, chain, bp)
+        if not proposal.get("legs"):
+            return {"symbol": symbol, "features": features, "decision": decision, "proposal": proposal, "risk_passed": False, "risk_reasons": ["no legs"], "score": score, "conf": conf}
+
+        passed, reasons = validate_trade(account, positions, orders, {"symbol": symbol, **proposal}, chain, initial_equity=100000)
+        # stash chain for later double-gate if needed
+        return {"symbol": symbol, "features": features, "decision": decision, "proposal": {**proposal, "symbol": symbol}, "risk_passed": passed, "risk_reasons": reasons, "score": score, "conf": conf, "chain": chain}
+    except Exception as e:
+        logger.error(f"Eval {symbol} failed: {e}", exc_info=True)
+        return {"symbol": symbol, "error": str(e), "risk_passed": False, "risk_reasons": [str(e)], "score": -1, "conf": -1}
+
 
 def run_cycle(dry_run: bool = False, force: bool = False, symbol_filter: str | None = None) -> Dict[str, Any]:
     print(BANNER)
     logger.info(f"Starting Vega cycle dry_run={dry_run} force={force} paper={APCA_PAPER} key={APCA_API_KEY_ID[:6]}...")
+
     if not APCA_PAPER:
         raise RuntimeError("BLOCKED: Live trading detected — aborting.")
 
     client = AlpacaClient(paper=True)
     executor = OrderExecutor(client)
 
-    # Clock & account
     try:
         clock = client.get_clock()
         is_open = clock.get("is_open", is_market_open())
@@ -58,7 +109,6 @@ def run_cycle(dry_run: bool = False, force: bool = False, symbol_filter: str | N
         orders = client.get_orders(status="open")
     except Exception as e:
         logger.error(f"Failed to fetch account/positions: {e}")
-        # synthetic account for dry-run
         account = {"equity": "100000", "buying_power": "400000", "cash": "100000", "options_buying_power": "200000", "status": "ACTIVE", "trading_blocked": False}
         positions = []
         orders = []
@@ -67,7 +117,6 @@ def run_cycle(dry_run: bool = False, force: bool = False, symbol_filter: str | N
     bp = float(account.get("buying_power", 400000) or 0)
     logger.info(f"Account equity=${equity:,.2f} BP=${bp:,.2f} positions={len(positions)} open_orders={len(orders)}")
 
-    # Earnings calendar
     try:
         earnings = get_upcoming_earnings(UNIVERSE, days_ahead=7)
         logger.info(f"Earnings watch: {earnings}")
@@ -75,7 +124,6 @@ def run_cycle(dry_run: bool = False, force: bool = False, symbol_filter: str | N
         logger.warning(f"earnings fetch failed: {e}")
         earnings = []
 
-    # Manage existing positions — take profit / stop loss
     if not dry_run and is_open:
         try:
             actions = executor.manage_positions(
@@ -88,97 +136,43 @@ def run_cycle(dry_run: bool = False, force: bool = False, symbol_filter: str | N
         except Exception as e:
             logger.warning(f"position management failed: {e}")
 
-    # Evaluate universe
     universe = [symbol_filter] if symbol_filter else UNIVERSE
-    best_proposal = None
-    best_confidence = -1
-    best_features = None
-    best_decision = None
     all_evals: List[Dict[str, Any]] = []
 
-    for symbol in universe:
-        logger.info(f"\n── Evaluating {symbol} ──")
-        try:
-            bars = client.get_bars(symbol, days=60)
-            chain = client.get_option_chain(symbol)
-            features = compute_features(symbol, bars, chain)
-            # News sentiment (Ling Fin Flash when key available, else heuristic) — v2 enhancement
+    # Parallel evaluation (6-8 workers balances API rate vs speed)
+    max_workers = min(8, len(universe))
+    logger.info(f"Evaluating {len(universe)} symbols in parallel (workers={max_workers})")
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_map = {pool.submit(_evaluate_one, sym, client, earnings, account, positions, orders, bp): sym for sym in universe}
+        for fut in as_completed(future_map):
+            sym = future_map[fut]
             try:
-                sentiment = get_news_sentiment(symbol)
-                features["news_sentiment"] = sentiment.get("sentiment")
-                features["news_confidence"] = sentiment.get("confidence")
-                features["news_headline"] = sentiment.get("headline", "")[:120]
-            except Exception:
-                features["news_sentiment"] = "neutral"
-            logger.info(f"Features {symbol}: {features}")
+                rec = fut.result()
+                # strip chain before storing to keep JSON light, but keep proposal
+                chain_tmp = rec.pop("chain", None)
+                # log per-symbol
+                if "decision" in rec:
+                    logger.info(f"LLM decision {sym}: {rec.get('decision')}")
+                    log_event("symbol_eval", symbol=sym, features=rec.get("features"), decision=rec.get("decision"))
+                all_evals.append(rec)
+            except Exception as e:
+                logger.error(f"Future {sym} crashed: {e}", exc_info=True)
+                all_evals.append({"symbol": sym, "error": str(e), "risk_passed": False, "risk_reasons": [str(e)], "score": -1})
 
-            # Skip if no chain
-            if not chain:
-                logger.warning(f"{symbol} no option chain — skip")
-                continue
+    # Deterministic ordering for dashboard/logs
+    all_evals.sort(key=lambda x: x.get("symbol", ""))
 
-            decision = classify(features, earnings)
-            # Boost confidence if news aligns with bias (e.g., bullish news + bullish strategy)
-            try:
-                if features.get("news_sentiment") == decision.get("bias") and features.get("news_sentiment") != "neutral":
-                    decision["confidence"] = min(0.95, decision.get("confidence", 0.5) + 0.07)
-                    decision["rationale"] += f" + news {features['news_sentiment']}"
-            except Exception:
-                pass
-            logger.info(f"LLM decision {symbol}: {decision}")
-            log_event("symbol_eval", symbol=symbol, features=features, decision=decision)
+    # Pick best by score then confidence among risk-passed
+    candidates = [ev for ev in all_evals if ev.get("risk_passed") and ev.get("proposal")]
+    best = None
+    if candidates:
+        # highest score, tie-break by confidence
+        candidates.sort(key=lambda x: (x.get("score", -1), x.get("conf", -1)), reverse=True)
+        best = candidates[0]
 
-            # Track best by edge-weighted confidence and diversification
-            existing_underlyings = {p.get("symbol","")[:4] for p in positions}
-            if symbol[:3] in {u[:3] for u in existing_underlyings} and len(positions) >= 2:
-                decision["confidence"] = max(0.1, decision.get("confidence",0) * 0.85)
-            conf = decision.get("confidence", 0)
-            edge = decision.get("edge_bps", 0)
-            score = conf + edge/10000
-            best_score = best_confidence + (best_decision.get("edge_bps",0)/10000 if best_decision else 0) if best_decision else -1
-            if decision.get("strategy") != "NO_TRADE" and score > best_score:
-                # Build legs to validate feasibility
-                spot = features.get("last", 500)
-                proposal = build_legs(decision, spot, chain, bp)
-                if proposal.get("legs"):
-                    # risk gate preview
-                    passed, reasons = validate_trade(account, positions, orders, {"symbol": symbol, **proposal}, chain, initial_equity=100000)
-                    eval_rec = {
-                        "symbol": symbol,
-                        "features": features,
-                        "decision": decision,
-                        "proposal": proposal,
-                        "risk_passed": passed,
-                        "risk_reasons": reasons,
-                    }
-                    all_evals.append(eval_rec)
-                    if passed and conf > best_confidence:
-                        best_confidence = conf
-                        best_proposal = proposal
-                        best_proposal["symbol"] = symbol
-                        best_features = features
-                        best_decision = decision
-                    else:
-                        logger.info(f"{symbol} risk failed: {reasons}")
-                else:
-                    logger.warning(f"{symbol} build_legs empty: {proposal}")
-                    all_evals.append({"symbol": symbol, "decision": decision, "proposal": proposal, "risk_passed": False, "risk_reasons": ["no legs"]})
-            else:
-                all_evals.append({"symbol": symbol, "features": features, "decision": decision, "proposal": None, "risk_passed": False, "risk_reasons": ["NO_TRADE or low confidence"]})
-
-        except Exception as e:
-            logger.error(f"Eval {symbol} failed: {e}", exc_info=True)
-            all_evals.append({"symbol": symbol, "error": str(e)})
-            continue
-
-        # rate limiting — small delay
-        time.sleep(0.4)
-
-    # No trade case
-    if not best_proposal:
+    if not best:
         logger.info("No valid proposal passed risk gates — standing aside this cycle.")
         log_event("cycle_no_trade", evals=all_evals)
-        # still log cycle for dashboard
         cycle_record = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "status": "no_trade",
@@ -188,21 +182,25 @@ def run_cycle(dry_run: bool = False, force: bool = False, symbol_filter: str | N
         _save_cycle(cycle_record)
         print("\n--- CYCLE RESULT: NO_TRADE (all symbols filtered by risk or no edge) ---")
         for ev in all_evals:
-            print(f"  {ev.get('symbol')}: {ev.get('decision',{}).get('strategy') if ev.get('decision') else ev.get('error')} conf={ev.get('decision',{}).get('confidence')} risk={ev.get('risk_passed')}")
+            strat = ev.get("decision", {}).get("strategy") if ev.get("decision") else ev.get("error")
+            print(f"  {ev.get('symbol')}: {strat} conf={ev.get('decision',{}).get('confidence') if ev.get('decision') else '-'} risk={ev.get('risk_passed')}")
         return cycle_record
 
-    # We have best proposal — preview + execute
+    best_proposal = best["proposal"]
+    best_decision = best["decision"]
+    best_features = best.get("features")
+    best_confidence = best.get("conf", 0)
+
     logger.info(f"\n★ BEST PROPOSAL: {best_decision} => {best_proposal['strategy']} on {best_proposal['symbol']} qty={best_proposal['qty']}")
     log_event("best_proposal", decision=best_decision, proposal=best_proposal, features=best_features)
 
     preview = executor.preview(best_proposal["legs"], account, best_proposal)
     print("\n" + preview + "\n")
 
-    # Final risk re-check (double gate)
-    # need chain for underlying again
+    # Final risk re-check (double gate) — refetch chain for underlying
     try:
         chain = client.get_option_chain(best_proposal["symbol"])
-    except:
+    except Exception:
         chain = []
     passed, reasons = validate_trade(account, positions, orders, best_proposal, chain, initial_equity=100000)
     if not passed and not dry_run:
@@ -223,7 +221,6 @@ def run_cycle(dry_run: bool = False, force: bool = False, symbol_filter: str | N
     for r in reasons:
         print(f"  {r}")
 
-    # Submit
     results = executor.submit_legs(best_proposal["legs"], dry_run=dry_run)
 
     cycle_record = {
@@ -240,7 +237,6 @@ def run_cycle(dry_run: bool = False, force: bool = False, symbol_filter: str | N
     }
     _save_cycle(cycle_record)
 
-    # Human summary
     print("\n--- CYCLE RESULT ---")
     print(f"Strategy: {best_proposal['strategy']} on {best_proposal['symbol']}")
     print(f"Rationale: {best_decision.get('rationale')}")
@@ -261,14 +257,13 @@ def _save_cycle(record: Dict[str, Any]):
     fname = run_dir / f"{ts}-paper-trading.json"
     with open(fname, "w") as f:
         json.dump(record, f, indent=2, default=str)
-    # also append to portfolio log
     log_file = PROJECT_ROOT / "logs" / "cycles.jsonl"
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with open(log_file, "a") as f:
         f.write(json.dumps(record, default=str) + "\n")
 
 def main():
-    parser = argparse.ArgumentParser(description="Vega autonomous options alpha agent")
+    parser = argparse.ArgumentParser(description="Vega autonomous options alpha agent (Fireworks AI)")
     parser.add_argument("--dry-run", action="store_true", help="Simulate without submitting orders")
     parser.add_argument("--force", action="store_true", help="Run even if market closed")
     parser.add_argument("--symbol", type=str, default=None, help="Filter to single symbol")

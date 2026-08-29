@@ -1,13 +1,56 @@
-"""News sentiment stub — Ling Fin Flash finance-native when available, else heuristic."""
+"""News sentiment — Fireworks + OpenRouter finance-native when available, else heuristic."""
 from typing import Dict, Any, List
 from src.utils.logger import logger, log_event
 import requests, json, os
 
+def _classify_with(provider: str, headline: str, symbol: str) -> Dict[str, Any] | None:
+    try:
+        if provider == "fireworks":
+            from src.config import FIREWORKS_BASE_URL, FIREWORKS_MODEL
+            key = os.getenv("FIREWORKS_API_KEY", "")
+            if not key:
+                return None
+            base_url = (FIREWORKS_BASE_URL or "https://api.fireworks.ai/inference/v1").rstrip("/")
+            model = FIREWORKS_MODEL
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        else:
+            from src.config import OPENROUTER_BASE_URL, OPENROUTER_MODEL, OPENROUTER_REFERRER, OPENROUTER_TITLE
+            key = os.getenv("OPENROUTER_API_KEY", "")
+            if not key:
+                return None
+            base_url = (OPENROUTER_BASE_URL or "https://openrouter.ai/api/v1").rstrip("/")
+            model = OPENROUTER_MODEL
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json", "HTTP-Referer": OPENROUTER_REFERRER, "X-Title": OPENROUTER_TITLE}
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a finance sentiment classifier. Given a headline and symbol, output JSON {\"sentiment\": \"bullish|bearish|neutral\", \"confidence\": 0-1, \"reason\": \"short\"}."},
+                {"role": "user", "content": json.dumps({"symbol": symbol, "headline": headline})},
+            ],
+            "temperature": 0.15,
+            "max_tokens": 150,
+            "response_format": {"type": "json_object"},
+        }
+        resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=10)
+        if resp.status_code == 200:
+            content = resp.json()["choices"][0]["message"]["content"]
+            txt = content.strip()
+            if txt.startswith("```"):
+                txt = txt.split("```")[1]
+                if txt.startswith("json"):
+                    txt = txt[4:]
+            parsed = json.loads(txt.strip())
+            parsed["headline"] = headline[:120]
+            parsed["source"] = provider
+            return parsed
+    except Exception as e:
+        logger.debug(f"{provider} sentiment failed {symbol}: {e}")
+    return None
+
 def get_news_sentiment(symbol: str) -> Dict[str, Any]:
-    """Lightweight sentiment using Ling Fin Flash if LING_API_KEY available, else heuristic from technicals.
-    Designed for 7-day hackathon — no external paid news API required; uses yfinance news + Ling reasoning.
+    """Lightweight sentiment using Fireworks/OpenRouter if key available, else heuristic.
+    Uses yfinance news + dual-provider reasoning. No paid news API required.
     """
-    # Try yfinance news
     headline = ""
     try:
         import yfinance as yf
@@ -18,33 +61,12 @@ def get_news_sentiment(symbol: str) -> Dict[str, Any]:
     except Exception as e:
         logger.debug(f"yfinance news {symbol}: {e}")
 
-    # Try Ling Fin Flash for finance sentiment if key available
-    ling_key = os.getenv("LING_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("AI_GATEWAY_API_KEY")
-    if ling_key and headline:
-        try:
-            from src.config import LING_BASE_URL, LING_MODEL
-            payload = {
-                "model": LING_MODEL,
-                "messages": [
-                    {"role": "system", "content": "You are a finance sentiment classifier. Given a headline and symbol, output JSON {\"sentiment\": \"bullish|bearish|neutral\", \"confidence\": 0-1, \"reason\": \"short\"}."},
-                    {"role": "user", "content": json.dumps({"symbol": symbol, "headline": headline})},
-                ],
-                "temperature": 0.2,
-                "max_tokens": 150,
-                "response_format": {"type": "json_object"},
-            }
-            headers = {"Authorization": f"Bearer {ling_key}", "Content-Type": "application/json", "HTTP-Referer": "https://lablab.ai", "X-Title": "Vega Sentiment"}
-            resp = requests.post(f"{LING_BASE_URL.rstrip('/')}/chat/completions", headers=headers, json=payload, timeout=10)
-            if resp.status_code == 200:
-                content = resp.json()["choices"][0]["message"]["content"]
-                parsed = json.loads(content.strip().removeprefix("```json").removesuffix("```").strip())
-                parsed["headline"] = headline
-                parsed["source"] = "ling-fin-flash"
-                log_event("news_sentiment_ling", symbol=symbol, headline=headline[:120], output=parsed)
-                return parsed
-        except Exception as e:
-            logger.debug(f"ling sentiment failed {symbol}: {e}")
+    if headline:
+        # Try Fireworks first (fast), then OpenRouter fallback
+        for provider in ("fireworks", "openrouter"):
+            res = _classify_with(provider, headline, symbol)
+            if res:
+                log_event(f"news_sentiment_{provider}", symbol=symbol, headline=headline[:120], output=res)
+                return res
 
-    # Heuristic fallback — neutral with slight momentum tilt
-    # This ensures agent never blocks on missing news
     return {"sentiment": "neutral", "confidence": 0.5, "reason": "heuristic fallback", "headline": headline[:120], "source": "heuristic"}

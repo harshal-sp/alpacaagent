@@ -31,6 +31,13 @@ from src.utils.logger import log_event, logger
 PAPER_URL = "https://paper-api.alpaca.markets"
 LIVE_URL = "https://api.alpaca.markets"
 
+# Simple TTL cache for bars/chains (avoids hammering APIs in 15m loop)
+_CACHE_BARS: dict = {}   # key -> (df, ts)
+_CACHE_CHAINS: dict = {}  # key -> (chain, ts)
+_CACHE_TTL_BARS = 300   # 5 min: daily bars don't change intraday
+_CACHE_TTL_CHAINS = 120  # 2 min: chains move faster
+import time as _time
+
 class AlpacaPaperGuard:
     """Hard guard — refuses to operate if not paper."""
     @staticmethod
@@ -142,7 +149,14 @@ class AlpacaClient:
 
     # ---------- Market Data ----------
     def get_bars(self, symbol: str, days: int = 60, timeframe: str = "1Day") -> pd.DataFrame:
-        """Fetch daily bars. Falls back to yfinance if Alpaca fails."""
+        """Fetch daily bars. Falls back to yfinance if Alpaca fails. TTL-cached."""
+        cache_key = f"{symbol}:{days}:{timeframe}"
+        cached = _CACHE_BARS.get(cache_key)
+        if cached and (_time.time() - cached[1] < _CACHE_TTL_BARS):
+            df_cached = cached[0]
+            if df_cached is not None and not df_cached.empty:
+                log_event("get_bars", symbol=symbol, rows=len(df_cached), source="cache")
+                return df_cached.copy()
         # Try SDK
         if self.stock_data_client and timeframe == "1Day":
             try:
@@ -162,6 +176,7 @@ class AlpacaClient:
                         df = df.xs(symbol, level=0) if symbol in df.index.get_level_values(0) else df
                     df = df.reset_index()
                     log_event("get_bars", symbol=symbol, rows=len(df), source="alpaca")
+                    _CACHE_BARS[cache_key] = (df.copy(), _time.time())
                     return df
             except Exception as e:
                 logger.warning(f"Alpaca bars failed for {symbol}: {e}")
@@ -180,6 +195,7 @@ class AlpacaClient:
                 if "timestamp" in df.columns:
                     df["timestamp"] = pd.to_datetime(df["timestamp"])
                 log_event("get_bars", symbol=symbol, rows=len(df), source="yfinance_fallback")
+                _CACHE_BARS[cache_key] = (df.copy(), _time.time())
                 return df
         except Exception as e2:
             logger.warning(f"yfinance fallback failed for {symbol}: {e2}")
@@ -196,7 +212,8 @@ class AlpacaClient:
         base = base_map.get(symbol.upper(), 150.0)
         import numpy as np
         closes = base + np.cumsum(np.random.randn(days) * 1.2)
-        return pd.DataFrame({
+        dates = pd.date_range(end=datetime.now(), periods=days, freq="D")
+        df_syn = pd.DataFrame({
             "timestamp": dates,
             "open": closes * 0.998,
             "high": closes * 1.01,
@@ -206,6 +223,8 @@ class AlpacaClient:
             "trade_count": np.random.randint(1000, 5000, days),
             "vwap": closes,
         })
+        _CACHE_BARS[cache_key] = (df_syn.copy(), _time.time())
+        return df_syn
 
     def get_latest_quote(self, symbol: str) -> Dict[str, Any]:
         if self.stock_data_client:
@@ -231,7 +250,12 @@ class AlpacaClient:
             return {"symbol": symbol, "price": 500.0}
 
     def get_option_chain(self, underlying: str, expiration_gte: str | None = None, expiration_lte: str | None = None) -> List[Dict[str, Any]]:
-        """Fetch option chain — robust yfinance handling with quality scoring."""
+        """Fetch option chain — robust yfinance handling with quality scoring. TTL-cached."""
+        cache_key = f"chain:{underlying}"
+        cached = _CACHE_CHAINS.get(cache_key)
+        if cached and (_time.time() - cached[1] < _CACHE_TTL_CHAINS):
+            log_event("get_option_chain", underlying=underlying, total=len(cached[0]), source="cache")
+            return [dict(c) for c in cached[0]]
         # Try yfinance with quality scoring across expiries
         try:
             import yfinance as yf
@@ -314,7 +338,9 @@ class AlpacaClient:
                     # final filtered sorted by distance to spot
                     filtered = sorted(filtered, key=lambda c: abs(c["strike"] - spot))
                     log_event("get_option_chain", underlying=underlying, expiry=chosen, total=len(filtered), avg_iv=round(avg_iv,3), source="yfinance_scored")
-                    return filtered[:40]
+                    chain_out = filtered[:40]
+                    _CACHE_CHAINS[cache_key] = ([dict(c) for c in chain_out], _time.time())
+                    return chain_out
                 # Fallback: if no candidate passed quality, try first expiry with synthetic correction
                 # Use nearest expiry but clamp iv already, return nearest strikes
                 e = None
@@ -364,6 +390,7 @@ class AlpacaClient:
                     contracts_sorted = sorted(contracts, key=lambda c: abs(c["strike"] - spot))
                     filtered = contracts_sorted[:40]
                     log_event("get_option_chain", underlying=underlying, expiry=e, total=len(filtered), source="yfinance_fallback_nearest")
+                    _CACHE_CHAINS[cache_key] = ([dict(c) for c in filtered], _time.time())
                     return filtered
         except Exception as e:
             logger.warning(f"yfinance option chain failed for {underlying}: {e}")
@@ -395,6 +422,7 @@ class AlpacaClient:
                     "openInterest": int(np.random.randint(500, 20000)),
                 })
         log_event("get_option_chain", underlying=underlying, expiry=expiry, total=len(contracts), source="synthetic")
+        _CACHE_CHAINS[cache_key] = ([dict(c) for c in contracts], _time.time())
         return contracts
 
     # ---------- Orders ----------

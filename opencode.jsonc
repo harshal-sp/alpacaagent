@@ -1,20 +1,21 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  // Ling 3.0 Flash Fin — finance-native 124B MoE (5.1B active), 256K context, free via Vercel AI Gateway through Sep 25
-  // Vercel: inclusionai/ling-3.0-flash-fin-free | OpenRouter: inclusionai/ling-3.0-flash-fin:free | Opencode: opencode/ling-3.0-flash-fin-free
-  "model": "opencode/ling-3.0-flash-fin-free",
-  "small_model": "opencode/ling-3.0-flash-fin-free",
+  // Dual brain: Fireworks (primary fast) + OpenRouter (secondary finance/free) concurrent ensemble → rules
+  // Fireworks: accounts/fireworks/models/llama-v3p3-70b-instruct | deepseek-v3p1 | qwen3-235b-a22b-instruct-2507 | ling-3-flash
+  // OpenRouter: inclusionai/ling-3.0-flash-fin:free | deepseek/deepseek-r1:free | qwen/qwen3-235b-a22b:free
+  "model": "fireworks/llama-v3p3-70b-instruct",
+  "small_model": "fireworks/llama-v3p3-70b-instruct",
   "provider": {
+    "fireworks": {
+      "options": {
+        "apiKey": "{env:FIREWORKS_API_KEY}",
+        "baseURL": "https://api.fireworks.ai/inference/v1"
+      }
+    },
     "openrouter": {
       "options": {
         "apiKey": "{env:OPENROUTER_API_KEY}",
         "baseURL": "https://openrouter.ai/api/v1"
-      }
-    },
-    "vercel-ai-gateway": {
-      "options": {
-        "apiKey": "{env:AI_GATEWAY_API_KEY}",
-        "baseURL": "https://ai-gateway.vercel.sh/v1"
       }
     }
   },
@@ -31,6 +32,6 @@
     }
   },
   "instructions": [
-    "You are Vega, an aggressive autonomous options alpha agent. Use Ling 3.0 Flash Fin finance reasoning for regime classification."
+    "You are Vega, autonomous options alpha agent. Use Fireworks AI + OpenRouter concurrent ensemble for finance reasoning. Pick best confidence+edge_bps. Always output strict JSON."
   ]
 }
